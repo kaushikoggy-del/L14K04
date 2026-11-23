@@ -170,22 +170,58 @@
         }
     </style>
     <style id="dark-grey-override">
-  /* Override all amber/yellow accents to sleek dark slate-grey */
-  [class*="bg-amber-"], [class*="bg-yellow-"] {
+  /* 1. Fix Windows Chrome Dropdown <option> readability */
+  select, select option {
+    background-color: #18181b !important;
+    color: #f4f4f5 !important;
+  }
+  body.theme-sepia select, body.theme-sepia select option,
+  body.theme-daylight select, body.theme-daylight select option {
+    background-color: #ffffff !important;
+    color: #18181b !important;
+  }
+
+  /* 2. Dark Grey Overrides (Scoped ONLY to Dark Themes so Light Themes work!) */
+  body:not(.theme-sepia):not(.theme-daylight) [class*="bg-amber-"],
+  body:not(.theme-sepia):not(.theme-daylight) [class*="bg-yellow-"] {
     background-color: #27272a !important;
     color: #e4e4e7 !important;
   }
-  [class*="text-amber-"], [class*="text-yellow-"] {
+  body:not(.theme-sepia):not(.theme-daylight) [class*="text-amber-"],
+  body:not(.theme-sepia):not(.theme-daylight) [class*="text-yellow-"] {
     color: #d4d4d8 !important;
   }
-  [class*="border-amber-"], [class*="border-yellow-"] {
+  body:not(.theme-sepia):not(.theme-daylight) [class*="border-amber-"],
+  body:not(.theme-sepia):not(.theme-daylight) [class*="border-yellow-"] {
     border-color: #3f3f46 !important;
   }
-  /* Active navigation tab & logo badge subtle elevated grey */
-  nav button[class*="bg-amber-"], header [class*="bg-amber-"] {
+  body:not(.theme-sepia):not(.theme-daylight) nav button[class*="bg-amber-"],
+  body:not(.theme-sepia):not(.theme-daylight) header [class*="bg-amber-"] {
     background-color: #3f3f46 !important;
     color: #f4f4f5 !important;
     border-color: #52525b !important;
+  }
+
+  /* 3. Clean Daylight & Sepia Paper Overrides */
+  body.theme-daylight {
+    background-color: #faf8f5 !important;
+    color: #18181b !important;
+  }
+  body.theme-sepia {
+    background-color: #f4ecd8 !important;
+    color: #2b2118 !important;
+  }
+  body.theme-daylight .bg-card,
+  body.theme-sepia .bg-card {
+    background-color: #ffffff !important;
+    color: #18181b !important;
+    border-color: #d6d3d1 !important;
+  }
+  body.theme-daylight [class*="text-gray-"],
+  body.theme-daylight [class*="text-slate-"],
+  body.theme-sepia [class*="text-gray-"],
+  body.theme-sepia [class*="text-slate-"] {
+    color: #27272a !important;
   }
 </style>
 </head>
