@@ -169,6 +169,25 @@
             background: rgba(100, 116, 139, 0.7);
         }
     </style>
+    <style id="dark-grey-override">
+  /* Override all amber/yellow accents to sleek dark slate-grey */
+  [class*="bg-amber-"], [class*="bg-yellow-"] {
+    background-color: #27272a !important;
+    color: #e4e4e7 !important;
+  }
+  [class*="text-amber-"], [class*="text-yellow-"] {
+    color: #d4d4d8 !important;
+  }
+  [class*="border-amber-"], [class*="border-yellow-"] {
+    border-color: #3f3f46 !important;
+  }
+  /* Active navigation tab & logo badge subtle elevated grey */
+  nav button[class*="bg-amber-"], header [class*="bg-amber-"] {
+    background-color: #3f3f46 !important;
+    color: #f4f4f5 !important;
+    border-color: #52525b !important;
+  }
+</style>
 </head>
 <body class="theme-warm-dark min-h-screen flex flex-col text-sm">
 
