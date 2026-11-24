@@ -2764,17 +2764,27 @@ async function extractDigitalTextFromPdf(file, statusLabel) {
                 return Math.abs(dy) > 4 ? dy : a.transform[4] - b.transform[4];
             });
             let lastY = null;
+            let lastEndX = null;
             let lines = [];
             let cur = '';
             for (const it of colItems) {
+                const x = it.transform[4];
                 const y = it.transform[5];
+                const w = it.width || (it.str.length * 4.5);
+
                 if (lastY !== null && Math.abs(y - lastY) > 4) {
                     if (cur.trim()) lines.push(cur.trim());
                     cur = it.str;
                 } else {
-                    cur += (cur && !cur.endsWith(' ') ? ' ' : '') + it.str;
+                    const gap = (lastEndX !== null) ? (x - lastEndX) : 0;
+                    if (cur && gap > 18) {
+                        cur += ' | ' + it.str;
+                    } else {
+                        cur += (cur && !cur.endsWith(' ') ? ' ' : '') + it.str;
+                    }
                 }
                 lastY = y;
+                lastEndX = x + w;
             }
             if (cur.trim()) lines.push(cur.trim());
             return lines.join('\n');
