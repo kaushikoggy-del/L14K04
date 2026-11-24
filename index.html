@@ -1938,7 +1938,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                    // A. Try Gemini Keys First (Works for both AIza... and AQ.... keys)
                     let geminiError = "";
                     if (geminiKeys.length > 0) {
-                        const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+                        const modelsToTry = ['gemini-3.5-flash-lite', 'gemini-2.5-flash'];
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
@@ -3154,7 +3154,7 @@ How many of the pairs given above are correctly matched?
 
 Return ONLY valid JSON array: [{"qNo": 11, "text": "...", "options": ["optA", "optB", "optC", "optD"]}]`;
 
-            const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+            const modelsToTry = ['gemini-3.5-flash-lite', 'gemini-2.5-flash'];
             let repaired = false;
 
             for (const modelName of modelsToTry) {
