@@ -1404,134 +1404,180 @@
         }
 
         async function callGeminiAI(apiKey, exam, year, rawText, answerKey, fileObj) {
-            const promptText = `You are a Senior UPSC Exam Parser. Extract ALL questions from the provided content/PDF and match them with the Official Answer Keys.
-            Target Exam: ${exam}
-            Target Year: ${year}
-            Official Answer Keys Provided: ${answerKey}
-            
-            Available Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
-            
-            IMPORTANT: Extract EVERY question present (up to 100 questions). Keep output compact—do NOT generate eliminationLogic or peripheralKnowledge yet.
-            
-            Return ONLY a valid JSON array with these exact keys:
-            [
-              {
-                "id": "pyq_${year}_1",
-                "exam": "${exam}",
-                "year": ${year},
-                "subject": "<Exact match from Available Subjects>",
-                "theme": "<Accurate Micro-theme topic name>",
-                "question": "<Full question text including numbered statements>",
-                "options": ["<Option A>", "<Option B>", "<Option C>", "<Option D>"],
-                "correctAnswer": "<Full text of correct option>",
-                "officialKey": "<A or B or C or D>",
-                "eliminationLogic": "Pending deep AI enrichment.",
-                "peripheralKnowledge": "Pending deep AI enrichment."
-              }
-            ]
-            
-            Raw Content:
-            ${rawText}`;
+            const statusBtn = document.getElementById('btn-process-import');
 
-            const parts = [{ text: promptText }];
-
-            if (fileObj) {
-                const base64Data = await new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result.split(',')[1]);
-                    reader.onerror = () => reject(new Error("Failed to read uploaded file."));
-                    reader.readAsDataURL(fileObj);
-                });
-                parts.push({
-                    inlineData: {
-                        mimeType: fileObj.type || 'application/pdf',
-                        data: base64Data
-                    }
-                });
+            // 1. Parse Official Answer Key into a strict lookup map { 1: 'D', 2: 'C', ... }
+            const keyMap = {};
+            if (answerKey) {
+                const matches = answerKey.matchAll(/(\d+)\s*[-:.)]\s*([A-Da-d])/g);
+                for (const m of matches) {
+                    keyMap[parseInt(m[1], 10)] = m[2].toUpperCase();
+                }
             }
-            // Auto-optimize large PDF payloads locally via pdf.js (text extraction or lightweight page JPEGs)
-            const pdfPartIndex = parts.findIndex(p => (p.inlineData?.mimeType || p.inline_data?.mime_type) === 'application/pdf');
-            if (pdfPartIndex !== -1 && window.pdfjsLib) {
-                const statusEl = document.getElementById('btn-process-import');
-                if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Optimizing PDF locally...`;
-                try {
-                    const b64 = parts[pdfPartIndex].inlineData?.data || parts[pdfPartIndex].inline_data?.data;
-                    const binary = atob(b64);
-                    const bytes = new Uint8Array(binary.length);
-                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
 
-                    const pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
-                    let extractedText = '';
-                    for (let p = 1; p <= pdfDoc.numPages; p++) {
-                        const page = await pdfDoc.getPage(p);
-                        const content = await page.getTextContent();
-                        extractedText += `\n--- PAGE ${p} ---\n` + content.items.map(it => it.str).join(' ');
+            // 2. Helper to call Gemini with automatic failover across free models
+            async function runBatchExtraction(batchParts, label) {
+                const modelPool = [
+                    'models/gemini-3.8-flash',
+                    'models/gemini-3.6-flash',
+                    'models/gemini-3.5-flash-lite',
+                    'models/gemini-3.1-flash-lite'
+                ];
+                let lastError = "All free Gemini models are currently busy.";
+                for (const modelName of modelPool) {
+                    const shortName = modelName.replace('models/', '');
+                    if (statusBtn) {
+                        statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${label} via ${shortName}...`;
                     }
+                    try {
+                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{ parts: batchParts }],
+                                generationConfig: {
+                                    maxOutputTokens: 65536,
+                                    temperature: 0.0
+                                }
+                            })
+                        });
+                        const data = await res.json();
+                        if (!res.ok || data.error) {
+                            lastError = `${shortName}: ${data.error?.message || `HTTP ${res.status}`}`;
+                            continue;
+                        }
+                        const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                        const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                        if (jsonMatch) {
+                            return JSON.parse(jsonMatch[0]);
+                        }
+                        lastError = `${shortName}: Returned non-JSON output.`;
+                    } catch (err) {
+                        lastError = `${shortName}: ${err.message}`;
+                    }
+                }
+                throw new Error(lastError);
+            }
 
-                    if (extractedText.replace(/\s+/g, '').length > 300) {
-                        parts.splice(pdfPartIndex, 1, { text: `EXTRACTED PDF TEXT:\n${extractedText}` });
+            const buildPrompt = (extraContent = '') => `You are a strict, verbatim UPSC Exam OCR & Question Extractor.
+Target Exam: ${exam} | Year: ${year}
+Available Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
+
+CRITICAL RULES:
+1. Extract EVERY question present in this batch strictly VERBATIM (word-for-word, preserving every statement, list, table, and option exactly as printed). Do NOT summarize, skip, or paraphrase.
+2. Include the exact printed question number in "qNum" (integer).
+3. Keep "eliminationLogic" and "peripheralKnowledge" as "Pending deep AI enrichment."
+
+Return ONLY a valid JSON array:
+[
+  {
+    "qNum": 1,
+    "subject": "<Exact match from Available Subjects>",
+    "theme": "<Accurate Micro-theme topic name>",
+    "question": "<100% verbatim question text including all numbered statements>",
+    "options": ["<Verbatim Option A>", "<Verbatim Option B>", "<Verbatim Option C>", "<Verbatim Option D>"],
+    "officialKey": "<A/B/C/D>",
+    "eliminationLogic": "Pending deep AI enrichment.",
+    "peripheralKnowledge": "Pending deep AI enrichment."
+  }
+]
+${extraContent}`;
+
+            let allParsed = [];
+
+            // 3. Handle PDF via pdf.js with automatic page-batching (4 pages per batch = ~20-25 questions, zero truncation)
+            if (fileObj && (fileObj.type === 'application/pdf' || fileObj.name.toLowerCase().endsWith('.pdf')) && window.pdfjsLib) {
+                if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Reading PDF pages locally...`;
+                const arrayBuffer = await fileObj.arrayBuffer();
+                const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+                let fullText = '';
+                const pageTexts = [];
+                for (let p = 1; p <= pdfDoc.numPages; p++) {
+                    const page = await pdfDoc.getPage(p);
+                    const content = await page.getTextContent();
+                    const pStr = content.items.map(it => it.str).join(' ');
+                    pageTexts.push(pStr);
+                    fullText += pStr;
+                }
+
+                const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
+                const pagesPerBatch = 4;
+                const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
+
+                for (let b = 0; b < totalBatches; b++) {
+                    const startPage = b * pagesPerBatch + 1;
+                    const endPage = Math.min((b + 1) * pagesPerBatch, pdfDoc.numPages);
+                    const batchLabel = `Batch ${b + 1}/${totalBatches} (Pages ${startPage}-${endPage})`;
+
+                    if (isDigitalText) {
+                        const chunkText = pageTexts.slice(startPage - 1, endPage).join('\n\n');
+                        const resItems = await runBatchExtraction([{ text: buildPrompt(`PDF TEXT:\n${chunkText}`) }], batchLabel);
+                        allParsed.push(...resItems);
                     } else {
-                        const imageParts = [];
-                        for (let p = 1; p <= pdfDoc.numPages; p++) {
+                        if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Rendering ${batchLabel}...`;
+                        const imgParts = [{ text: buildPrompt() }];
+                        for (let p = startPage; p <= endPage; p++) {
                             const page = await pdfDoc.getPage(p);
-                            const viewport = page.getViewport({ scale: 1.35 });
+                            const viewport = page.getViewport({ scale: 1.5 });
                             const canvas = document.createElement('canvas');
                             canvas.width = viewport.width;
                             canvas.height = viewport.height;
                             await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-                            const jpegB64 = canvas.toDataURL('image/jpeg', 0.72).split(',')[1];
-                            imageParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
+                            const jpegB64 = canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
+                            imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
                         }
-                        parts.splice(pdfPartIndex, 1, ...imageParts);
+                        const resItems = await runBatchExtraction(imgParts, batchLabel);
+                        allParsed.push(...resItems);
                     }
-                } catch (pdfErr) {
-                    console.warn('Local PDF optimization skipped:', pdfErr);
                 }
-            }
-         const statusBtn = document.getElementById('btn-process-import');
-            const modelPool = [
-                'models/gemini-3.5-flash-lite',
-                'models/gemini-3.1-flash-lite',
-                'models/gemini-3.8-flash',
-                'models/gemini-3.6-flash'
-            ];
-
-            let lastError = "All free Gemini models are currently busy.";
-            for (const modelName of modelPool) {
-                const shortName = modelName.replace('models/', '');
-                if (statusBtn) {
-                    statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Extracting via ${shortName}...`;
-                }
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts }],
-                            generationConfig: {
-                                maxOutputTokens: 65536,
-                                temperature: 0.1
-                            }
-                        })
+            } else {
+                // Single image or pasted raw text
+                const parts = [{ text: buildPrompt(rawText ? `Raw Content:\n${rawText}` : '') }];
+                if (fileObj) {
+                    const base64Data = await new Promise((resolve, reject) => {
+                        const reader = new FileReader();
+                        reader.onload = () => resolve(reader.result.split(',')[1]);
+                        reader.onerror = () => reject(new Error("Failed to read uploaded file."));
+                        reader.readAsDataURL(fileObj);
                     });
-
-                    const data = await res.json();
-                    if (!res.ok || data.error) {
-                        lastError = `${shortName}: ${data.error?.message || `HTTP ${res.status}`}`;
-                        continue; // Instantly hop to next model only if Google returns an actual error
-                    }
-
-                    const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-                    if (jsonMatch) {
-                        return JSON.parse(jsonMatch[0]);
-                    }
-                    lastError = `${shortName}: Returned non-JSON output.`;
-                } catch (err) {
-                    lastError = `${shortName}: ${err.message}`;
+                    parts.push({ inlineData: { mimeType: fileObj.type || 'image/jpeg', data: base64Data } });
                 }
+                allParsed = await runBatchExtraction(parts, 'Extracting Questions');
             }
-            throw new Error(lastError);
+
+            // 4. Deduplicate by question number & FORCE-LOCK official answer keys deterministically in JS
+            const seen = new Set();
+            const finalized = [];
+            for (let idx = 0; idx < allParsed.length; idx++) {
+                const item = allParsed[idx];
+                const qNum = parseInt(item.qNum, 10) || (idx + 1);
+                if (seen.has(qNum)) continue;
+                seen.add(qNum);
+
+                const lockedKey = keyMap[qNum] || (item.officialKey || 'A').toUpperCase().trim().charAt(0);
+                const optIndex = { A: 0, B: 1, C: 2, D: 3 }[lockedKey] ?? 0;
+                const cleanOptions = Array.isArray(item.options) && item.options.length === 4
+                    ? item.options.map(o => String(o).replace(/^\(?[a-dA-D]\)?[.)]\s*/, '').trim())
+                    : ["Option A", "Option B", "Option C", "Option D"];
+
+                finalized.push({
+                    id: `pyq_${year}_${qNum}`,
+                    exam: exam,
+                    year: parseInt(year, 10) || year,
+                    subject: item.subject || 'Miscellaneous',
+                    theme: item.theme || 'General',
+                    question: item.question || '',
+                    options: cleanOptions,
+                    correctAnswer: cleanOptions[optIndex] || cleanOptions[0],
+                    officialKey: lockedKey,
+                    eliminationLogic: "Pending deep AI enrichment.",
+                    peripheralKnowledge: "Pending deep AI enrichment."
+                });
+            }
+
+            finalized.sort((a, b) => parseInt(a.id.split('_').pop(), 10) - parseInt(b.id.split('_').pop(), 10));
+            return finalized;
         }
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
