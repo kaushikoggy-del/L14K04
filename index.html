@@ -1448,45 +1448,63 @@
                 });
             }
 
-           // 1. Prioritize high-quota (500 RPD) Flash-Lite models first, keeping 20 RPD models as backup
-            const modelPool = [
+         let modelPool = [
+                'models/gemini-2.5-flash-lite',
+                'models/gemini-2.5-flash',
                 'models/gemini-3.5-flash-lite',
                 'models/gemini-3.1-flash-lite',
-                'models/gemini-2.5-flash-lite',
                 'models/gemini-3.8-flash',
                 'models/gemini-3.6-flash'
             ];
-
-            let lastError = "All free Gemini models reached quota or are busy.";
-            for (const modelName of modelPool) {
-                try {
-                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts }],
-                            generationConfig: {
-                                maxOutputTokens: 65536,
-                                temperature: 0.1
-                            }
-                        })
-                    });
-
-                    const data = await res.json();
-                    if (!res.ok || data.error) {
-                        lastError = `${modelName}: ${data.error?.message || `HTTP ${res.status}`}`;
-                        continue; // Instantly hop to next model on 429 quota or 503 traffic spike
+            try {
+                const mRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                const mData = await mRes.json();
+                if (mRes.ok && mData.models) {
+                    const valid = mData.models
+                        .filter(m => m.supportedGenerationMethods?.includes('generateContent') && /flash/i.test(m.name) && !/audio|tts|image|live/i.test(m.name))
+                        .map(m => m.name);
+                    if (valid.length) {
+                        modelPool = [
+                            ...valid.filter(n => /lite/i.test(n)),
+                            ...valid.filter(n => !/lite/i.test(n))
+                        ];
                     }
-
-                    const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                    const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-                    if (jsonMatch) {
-                        return JSON.parse(jsonMatch[0]);
-                    }
-                    lastError = `${modelName}: Returned non-JSON output.`;
-                } catch (err) {
-                    lastError = `${modelName}: ${err.message}`;
                 }
+            } catch (_) {}
+
+            let lastError = "All free Gemini models are busy.";
+            for (let pass = 0; pass < 2; pass++) {
+                for (const modelName of modelPool) {
+                    try {
+                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                contents: [{ parts }],
+                                generationConfig: {
+                                    maxOutputTokens: 65536,
+                                    temperature: 0.1
+                                }
+                            })
+                        });
+
+                        const data = await res.json();
+                        if (!res.ok || data.error) {
+                            lastError = `${modelName}: ${data.error?.message || `HTTP ${res.status}`}`;
+                            continue;
+                        }
+
+                        const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                        const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                        if (jsonMatch) {
+                            return JSON.parse(jsonMatch[0]);
+                        }
+                        lastError = `${modelName}: Returned non-JSON output.`;
+                    } catch (err) {
+                        lastError = `${modelName}: ${err.message}`;
+                    }
+                }
+                if (pass === 0) await new Promise(r => setTimeout(r, 3000)); // Wait 3s before 2nd pass on traffic spikes
             }
             throw new Error(lastError);
         }
