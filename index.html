@@ -1424,22 +1424,41 @@
             Raw Content:
             ${rawText}`;
 
+            const parts = [{ text: promptText }];
+
+            if (fileObj) {
+                const base64Data = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = () => reject(new Error("Failed to read uploaded file."));
+                    reader.readAsDataURL(fileObj);
+                });
+                parts.push({
+                    inlineData: {
+                        mimeType: fileObj.type || 'application/pdf',
+                        data: base64Data
+                    }
+                });
+            }
+
             const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ parts: [{ text: promptText }] }]
+                    contents: [{ parts }]
                 })
             });
 
             const data = await res.json();
-            const responseText = data.candidates[0].content.parts[0].text;
-            const jsonMatch = responseText.match(/\[\s*\{.*\}\s*\]/s);
+            if (!res.ok || data.error) {
+                throw new Error(data.error?.message || `API HTTP ${res.status}`);
+            }
+            const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
             if (jsonMatch) {
                 return JSON.parse(jsonMatch[0]);
             }
-            throw new Error("Could not parse JSON response from Gemini");
-        }
+            throw new Error("Gemini returned text instead of JSON. Try a smaller 5-10 question PDF/screenshot batch.");
 
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
