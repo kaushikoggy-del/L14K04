@@ -655,7 +655,7 @@
             </div>
         </section>
         <!-- ==================== ISOLATED TEST SERIES (CBT) MODULE ==================== -->
-<section id="view-cbt" class="hidden space-y-6">
+<section id="tab-cbt" class="hidden space-y-6">
     <!-- 1. Test Series Lobby & Isolated Importer -->
     <div id="cbt-lobby" class="space-y-6">
         <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 flex flex-wrap items-center justify-between gap-4">
@@ -1086,12 +1086,13 @@
 
         // TAB NAVIGATION
         function switchTab(tabId) {
-            ['explorer', 'import', 'notes'].forEach(t => {
+            ['explorer', 'import', 'notes', 'cbt'].forEach(t => {
                 document.getElementById(`tab-${t}`).classList.add('hidden');
-                document.getElementById(`nav-${t}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-300 hover:text-white hover:bg-white/5';
+                document.getElementById(`nav-${t}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-400 hover:text-white';
             });
             document.getElementById(`tab-${tabId}`).classList.remove('hidden');
-            document.getElementById(`nav-${tabId}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition bg-amber-600 text-white shadow';
+            document.getElementById(`nav-${tabId}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition bg-gray-800 text-amber-400 border border-amber-500/30';
+            if (tabId === 'cbt' && typeof renderCbtLobby === 'function') renderCbtLobby();
         }
 
         // 3-DOTS MENU & MODALS
