@@ -1441,7 +1441,24 @@
                 });
             }
 
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent?key=${apiKey}`, {
+           const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+            const listData = await listRes.json();
+            if (!listRes.ok || listData.error) {
+                throw new Error(listData.error?.message || `Key check HTTP ${listRes.status}`);
+            }
+            const validModels = (listData.models || []).filter(m =>
+                m.supportedGenerationMethods?.includes('generateContent') &&
+                /gemini/i.test(m.name) &&
+                !/embedding|aqa|imagen|veo|tts|audio|live/i.test(m.name)
+            );
+            const preferred = validModels.find(m => /gemini-3.*flash/i.test(m.name))
+                || validModels.find(m => /flash/i.test(m.name))
+                || validModels[0];
+            if (!preferred) {
+                throw new Error("No generateContent Gemini models available for this API key.");
+            }
+
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${preferred.name}:generateContent?key=${apiKey}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
