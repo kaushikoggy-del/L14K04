@@ -2723,22 +2723,7 @@ function onCbtTypeChange() {
     }
 }
 
-function onCbtTypeChange() {
-    const exam = document.getElementById('cbt-param-exam').value;
-    const type = document.getElementById('cbt-param-type').value;
-    const testNoInput = document.getElementById('cbt-param-testno');
-    const subjectSelect = document.getElementById('cbt-param-subject');
 
-    if (type === 'FLT') {
-        testNoInput.classList.remove('hidden');
-        subjectSelect.classList.add('hidden');
-    } else {
-        testNoInput.classList.add('hidden');
-        subjectSelect.classList.remove('hidden');
-        const subjects = CBT_SECTIONAL_SUBJECTS[exam] || [];
-        subjectSelect.innerHTML = subjects.map(sub => `<option value="${sub}">${sub}</option>`).join('');
-    }
-}
 
 function handleCbtFileChange(type, input) {
     const file = input.files && input.files[0] ? input.files[0] : null;
