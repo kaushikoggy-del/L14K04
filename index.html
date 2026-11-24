@@ -1405,61 +1405,82 @@
 
         async function callGeminiAI(apiKey, exam, year, rawText, answerKey, fileObj) {
             const statusBtn = document.getElementById('btn-process-import');
+            let etaInterval = null;
+            let etaEndTime = 0;
+            let currentStatusPrefix = 'Initializing...';
 
-            // 1. Parse Official Answer Key into a strict lookup map { 1: 'D', 2: 'C', ... }
-            const keyMap = {};
-            if (answerKey) {
-                const matches = answerKey.matchAll(/(\d+)\s*[-:.)]\s*([A-Da-d])/g);
-                for (const m of matches) {
-                    keyMap[parseInt(m[1], 10)] = m[2].toUpperCase();
+            const startEtaTimer = (estimatedSeconds) => {
+                etaEndTime = Date.now() + (estimatedSeconds * 1000);
+                if (etaInterval) clearInterval(etaInterval);
+                const updateDisplay = () => {
+                    if (!statusBtn) return;
+                    const secsLeft = Math.max(1, Math.ceil((etaEndTime - Date.now()) / 1000));
+                    statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${currentStatusPrefix} • Est. ~${secsLeft}s left`;
+                };
+                updateDisplay();
+                etaInterval = setInterval(updateDisplay, 1000);
+            };
+
+            const stopEtaTimer = () => {
+                if (etaInterval) {
+                    clearInterval(etaInterval);
+                    etaInterval = null;
                 }
-            }
+            };
 
-            // 2. Helper to call Gemini with automatic failover across free models
-            async function runBatchExtraction(batchParts, label) {
-                const modelPool = [
-                    'models/gemini-3.8-flash',
-                    'models/gemini-3.6-flash',
-                    'models/gemini-3.5-flash-lite',
-                    'models/gemini-3.1-flash-lite'
-                ];
-                let lastError = "All free Gemini models are currently busy.";
-                for (const modelName of modelPool) {
-                    const shortName = modelName.replace('models/', '');
-                    if (statusBtn) {
-                        statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> ${label} via ${shortName}...`;
-                    }
-                    try {
-                        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({
-                                contents: [{ parts: batchParts }],
-                                generationConfig: {
-                                    maxOutputTokens: 65536,
-                                    temperature: 0.0
-                                }
-                            })
-                        });
-                        const data = await res.json();
-                        if (!res.ok || data.error) {
-                            lastError = `${shortName}: ${data.error?.message || `HTTP ${res.status}`}`;
-                            continue;
-                        }
-                        const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                        const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-                        if (jsonMatch) {
-                            return JSON.parse(jsonMatch[0]);
-                        }
-                        lastError = `${shortName}: Returned non-JSON output.`;
-                    } catch (err) {
-                        lastError = `${shortName}: ${err.message}`;
+            try {
+                // 1. Parse Official Answer Key into a strict lookup map { 1: 'D', 2: 'C', ... }
+                const keyMap = {};
+                if (answerKey) {
+                    const matches = answerKey.matchAll(/(\d+)\s*[-:.)]\s*([A-Da-d])/g);
+                    for (const m of matches) {
+                        keyMap[parseInt(m[1], 10)] = m[2].toUpperCase();
                     }
                 }
-                throw new Error(lastError);
-            }
 
-            const buildPrompt = (extraContent = '') => `You are a strict, verbatim UPSC Exam OCR & Question Extractor.
+                // 2. Helper to call Gemini with automatic failover across free models
+                async function runBatchExtraction(batchParts, label) {
+                    const modelPool = [
+                        'models/gemini-3.5-flash-lite',
+                        'models/gemini-3.1-flash-lite',
+                        'models/gemini-2.5-flash',
+                        'models/gemini-2.0-flash'
+                    ];
+                    let lastError = "All free Gemini models are currently busy.";
+                    for (const modelName of modelPool) {
+                        const shortName = modelName.replace('models/', '');
+                        currentStatusPrefix = `${label} (${shortName})`;
+                        try {
+                            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({
+                                    contents: [{ parts: batchParts }],
+                                    generationConfig: {
+                                        maxOutputTokens: 65536,
+                                        temperature: 0.0
+                                    }
+                                })
+                            });
+                            const data = await res.json();
+                            if (!res.ok || data.error) {
+                                lastError = `${shortName}: ${data.error?.message || `HTTP ${res.status}`}`;
+                                continue;
+                            }
+                            const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                            const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                            if (jsonMatch) {
+                                return JSON.parse(jsonMatch[0]);
+                            }
+                            lastError = `${shortName}: Returned non-JSON output.`;
+                        } catch (err) {
+                            lastError = `${shortName}: ${err.message}`;
+                        }
+                    }
+                    throw new Error(lastError);
+                }
+
+                const buildPrompt = (extraContent = '') => `You are a strict, verbatim UPSC Exam OCR & Question Extractor.
 Target Exam: ${exam} | Year: ${year}
 Available Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
 
@@ -1483,101 +1504,118 @@ Return ONLY a valid JSON array:
 ]
 ${extraContent}`;
 
-            let allParsed = [];
+                let allParsed = [];
 
-            // 3. Handle PDF via pdf.js with automatic page-batching (4 pages per batch = ~20-25 questions, zero truncation)
-            if (fileObj && (fileObj.type === 'application/pdf' || fileObj.name.toLowerCase().endsWith('.pdf')) && window.pdfjsLib) {
-                if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Reading PDF pages locally...`;
-                const arrayBuffer = await fileObj.arrayBuffer();
-                const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                // 3. Handle PDF via pdf.js with automatic page-batching & self-calibrating ETA
+                if (fileObj && (fileObj.type === 'application/pdf' || fileObj.name.toLowerCase().endsWith('.pdf')) && window.pdfjsLib) {
+                    if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Calculating PDF workload & ETA...`;
+                    const arrayBuffer = await fileObj.arrayBuffer();
+                    const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-                let fullText = '';
-                const pageTexts = [];
-                for (let p = 1; p <= pdfDoc.numPages; p++) {
-                    const page = await pdfDoc.getPage(p);
-                    const content = await page.getTextContent();
-                    const pStr = content.items.map(it => it.str).join(' ');
-                    pageTexts.push(pStr);
-                    fullText += pStr;
-                }
-
-                const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
-                const pagesPerBatch = 4;
-                const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
-
-                for (let b = 0; b < totalBatches; b++) {
-                    const startPage = b * pagesPerBatch + 1;
-                    const endPage = Math.min((b + 1) * pagesPerBatch, pdfDoc.numPages);
-                    const batchLabel = `Batch ${b + 1}/${totalBatches} (Pages ${startPage}-${endPage})`;
-
-                    if (isDigitalText) {
-                        const chunkText = pageTexts.slice(startPage - 1, endPage).join('\n\n');
-                        const resItems = await runBatchExtraction([{ text: buildPrompt(`PDF TEXT:\n${chunkText}`) }], batchLabel);
-                        allParsed.push(...resItems);
-                    } else {
-                        if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Rendering ${batchLabel}...`;
-                        const imgParts = [{ text: buildPrompt() }];
-                        for (let p = startPage; p <= endPage; p++) {
-                            const page = await pdfDoc.getPage(p);
-                            const viewport = page.getViewport({ scale: 1.5 });
-                            const canvas = document.createElement('canvas');
-                            canvas.width = viewport.width;
-                            canvas.height = viewport.height;
-                            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-                            const jpegB64 = canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
-                            imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
-                        }
-                        const resItems = await runBatchExtraction(imgParts, batchLabel);
-                        allParsed.push(...resItems);
+                    let fullText = '';
+                    const pageTexts = [];
+                    for (let p = 1; p <= pdfDoc.numPages; p++) {
+                        const page = await pdfDoc.getPage(p);
+                        const content = await page.getTextContent();
+                        const pStr = content.items.map(it => it.str).join(' ');
+                        pageTexts.push(pStr);
+                        fullText += pStr;
                     }
+
+                    const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
+                    const pagesPerBatch = 4;
+                    const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
+                    let avgBatchSec = isDigitalText ? 8 : 15;
+
+                    startEtaTimer(totalBatches * avgBatchSec);
+                    let completedBatchTimes = [];
+
+                    for (let b = 0; b < totalBatches; b++) {
+                        const batchStart = Date.now();
+                        const startPage = b * pagesPerBatch + 1;
+                        const endPage = Math.min((b + 1) * pagesPerBatch, pdfDoc.numPages);
+                        const batchLabel = `Batch ${b + 1}/${totalBatches} (Pages ${startPage}-${endPage})`;
+
+                        if (isDigitalText) {
+                            const chunkText = pageTexts.slice(startPage - 1, endPage).join('\n\n');
+                            const resItems = await runBatchExtraction([{ text: buildPrompt(`PDF TEXT:\n${chunkText}`) }], batchLabel);
+                            allParsed.push(...resItems);
+                        } else {
+                            currentStatusPrefix = `Rendering ${batchLabel}`;
+                            const imgParts = [{ text: buildPrompt() }];
+                            for (let p = startPage; p <= endPage; p++) {
+                                const page = await pdfDoc.getPage(p);
+                                const viewport = page.getViewport({ scale: 1.5 });
+                                const canvas = document.createElement('canvas');
+                                canvas.width = viewport.width;
+                                canvas.height = viewport.height;
+                                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
+                                imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
+                            }
+                            const resItems = await runBatchExtraction(imgParts, batchLabel);
+                            allParsed.push(...resItems);
+                        }
+
+                        const elapsedSec = (Date.now() - batchStart) / 1000;
+                        completedBatchTimes.push(elapsedSec);
+                        avgBatchSec = completedBatchTimes.reduce((a, c) => a + c, 0) / completedBatchTimes.length;
+                        const remainingBatches = totalBatches - (b + 1);
+                        if (remainingBatches > 0) {
+                            startEtaTimer(Math.round(remainingBatches * avgBatchSec));
+                        }
+                    }
+                } else {
+                    const estSec = rawText ? Math.max(8, Math.ceil(rawText.length / 2500) * 4) : 14;
+                    startEtaTimer(estSec);
+                    const parts = [{ text: buildPrompt(rawText ? `Raw Content:\n${rawText}` : '') }];
+                    if (fileObj) {
+                        const base64Data = await new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(reader.result.split(',')[1]);
+                            reader.onerror = () => reject(new Error("Failed to read uploaded file."));
+                            reader.readAsDataURL(fileObj);
+                        });
+                        parts.push({ inlineData: { mimeType: fileObj.type || 'image/jpeg', data: base64Data } });
+                    }
+                    allParsed = await runBatchExtraction(parts, 'Extracting Questions');
                 }
-            } else {
-                // Single image or pasted raw text
-                const parts = [{ text: buildPrompt(rawText ? `Raw Content:\n${rawText}` : '') }];
-                if (fileObj) {
-                    const base64Data = await new Promise((resolve, reject) => {
-                        const reader = new FileReader();
-                        reader.onload = () => resolve(reader.result.split(',')[1]);
-                        reader.onerror = () => reject(new Error("Failed to read uploaded file."));
-                        reader.readAsDataURL(fileObj);
+
+                // 4. Deduplicate by question number & FORCE-LOCK official answer keys deterministically in JS
+                const seen = new Set();
+                const finalized = [];
+                for (let idx = 0; idx < allParsed.length; idx++) {
+                    const item = allParsed[idx];
+                    const qNum = parseInt(item.qNum, 10) || (idx + 1);
+                    if (seen.has(qNum)) continue;
+                    seen.add(qNum);
+
+                    const lockedKey = keyMap[qNum] || (item.officialKey || 'A').toUpperCase().trim().charAt(0);
+                    const optIndex = { A: 0, B: 1, C: 2, D: 3 }[lockedKey] ?? 0;
+                    const cleanOptions = Array.isArray(item.options) && item.options.length === 4
+                        ? item.options.map(o => String(o).replace(/^\(?[a-dA-D]\)?[.)]\s*/, '').trim())
+                        : ["Option A", "Option B", "Option C", "Option D"];
+
+                    finalized.push({
+                        id: `pyq_${year}_${qNum}`,
+                        exam: exam,
+                        year: parseInt(year, 10) || year,
+                        subject: item.subject || 'Miscellaneous',
+                        theme: item.theme || 'General',
+                        question: item.question || '',
+                        options: cleanOptions,
+                        correctAnswer: cleanOptions[optIndex] || cleanOptions[0],
+                        officialKey: lockedKey,
+                        eliminationLogic: "Pending deep AI enrichment.",
+                        peripheralKnowledge: "Pending deep AI enrichment."
                     });
-                    parts.push({ inlineData: { mimeType: fileObj.type || 'image/jpeg', data: base64Data } });
                 }
-                allParsed = await runBatchExtraction(parts, 'Extracting Questions');
+
+                finalized.sort((a, b) => parseInt(a.id.split('_').pop(), 10) - parseInt(b.id.split('_').pop(), 10));
+                return finalized;
+            } finally {
+                stopEtaTimer();
             }
-
-            // 4. Deduplicate by question number & FORCE-LOCK official answer keys deterministically in JS
-            const seen = new Set();
-            const finalized = [];
-            for (let idx = 0; idx < allParsed.length; idx++) {
-                const item = allParsed[idx];
-                const qNum = parseInt(item.qNum, 10) || (idx + 1);
-                if (seen.has(qNum)) continue;
-                seen.add(qNum);
-
-                const lockedKey = keyMap[qNum] || (item.officialKey || 'A').toUpperCase().trim().charAt(0);
-                const optIndex = { A: 0, B: 1, C: 2, D: 3 }[lockedKey] ?? 0;
-                const cleanOptions = Array.isArray(item.options) && item.options.length === 4
-                    ? item.options.map(o => String(o).replace(/^\(?[a-dA-D]\)?[.)]\s*/, '').trim())
-                    : ["Option A", "Option B", "Option C", "Option D"];
-
-                finalized.push({
-                    id: `pyq_${year}_${qNum}`,
-                    exam: exam,
-                    year: parseInt(year, 10) || year,
-                    subject: item.subject || 'Miscellaneous',
-                    theme: item.theme || 'General',
-                    question: item.question || '',
-                    options: cleanOptions,
-                    correctAnswer: cleanOptions[optIndex] || cleanOptions[0],
-                    officialKey: lockedKey,
-                    eliminationLogic: "Pending deep AI enrichment.",
-                    peripheralKnowledge: "Pending deep AI enrichment."
-                });
-            }
-
-            finalized.sort((a, b) => parseInt(a.id.split('_').pop(), 10) - parseInt(b.id.split('_').pop(), 10));
-            return finalized;
         }
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
