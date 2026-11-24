@@ -1667,50 +1667,67 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     return [{ role: 'user', content }];
                 };
 
-                // 3. Multi-Key + Multi-Provider Router (Gemini Pool -> Groq Pool -> OpenRouter Pool)
+                // Helper: Hard 20-second timeout so an ISP-blocked or slow endpoint never freezes at 1s
+                const fetchWithTimeout = async (url, options, timeoutMs = 20000) => {
+                    const controller = new AbortController();
+                    const timer = setTimeout(() => controller.abort(), timeoutMs);
+                    try {
+                        return await fetch(url, { ...options, signal: controller.signal });
+                    } finally {
+                        clearTimeout(timer);
+                    }
+                };
+
+                // 3. Multi-Key + Multi-Provider Router (Gemini AIza & AQ. Vertex Express -> Groq -> OpenRouter)
                 async function runBatchExtraction(batchParts, label) {
                     const currentBatchIdx = rrCounter++;
                     let lastError = "All configured AI keys/models are busy.";
 
-                    // A. Try Gemini Keys (rotated across all provided AIza keys)
+                    // A. Try Gemini Keys First (AIza... -> Google AI Studio | AQ.... -> Vertex Express)
                     if (geminiKeys.length > 0) {
                         const geminiModels = [
-    'gemini-3.5-flash-lite',
-    'gemini-3.8-flash',
-    'gemini-3.1-flash-lite'
-];
+                            'gemini-3.5-flash-lite',
+                            'gemini-3.8-flash',
+                            'gemini-3.1-flash-lite'
+                        ];
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
-                            for (const modelName of geminiModels) {
-                                const shortName = modelName.replace('models/', '');
-                                currentStatusPrefix = `${label} • Gemini Key #${keyIdx + 1}/${geminiKeys.length} (${shortName})`;
+                            const isVertexExpress = activeKey.startsWith('AQ.');
+
+                            for (const rawModel of geminiModels) {
+                                const cleanModel = rawModel.replace(/^models\//, '');
+                                currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
+                                const endpoint = isVertexExpress
+                                    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${cleanModel}:generateContent?key=${activeKey}`
+                                    : `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
+
                                 try {
-                                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${activeKey}`, {
+                                    const res = await fetchWithTimeout(endpoint, {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
-                                            contents: [{ parts: batchParts }],
-                                            generationConfig: { maxOutputTokens: 32768, temperature: 0.0 }
+                                            contents: [{ role: 'user', parts: batchParts }],
+                                            generationConfig: { maxOutputTokens: 65536, temperature: 0.0 }
                                         })
-                                    });
+                                    }, 20000);
                                     const data = await res.json();
                                     if (!res.ok || data.error) {
-                                        lastError = `Gemini Key #${keyIdx + 1} (${shortName}): ${data.error?.message || `HTTP ${res.status}`}`;
-                                        if (res.status === 429 || res.status === 400 || res.status === 403) break;
+                                        lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        if ([400, 401, 403, 429].includes(res.status)) break;
                                         continue;
                                     }
                                     const parsed = extractJsonArray(data.candidates?.[0]?.content?.parts?.[0]?.text);
                                     if (parsed) return parsed;
-                                    lastError = `Gemini Key #${keyIdx + 1} (${shortName}): Non-JSON output`;
+                                    lastError = `Gemini #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
                                 } catch (err) {
-                                    lastError = `Gemini Key #${keyIdx + 1}: ${err.message}`;
+                                    lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (20s)' : err.message}`;
                                 }
                             }
                         }
                     }
 
-                    // B. Automatic Failover to Groq (gsk_ keys)
+                    // B. Automatic Failover to Groq (gsk_ keys) when Gemini is busy
                     if (groqKeys.length > 0) {
                         const hasImages = batchParts.some(p => p.inlineData);
                         const groqModels = hasImages
@@ -1720,9 +1737,9 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                             const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
                             const activeKey = groqKeys[keyIdx];
                             for (const gModel of groqModels) {
-                                currentStatusPrefix = `${label} • Groq Key #${keyIdx + 1} (${gModel.split('/').pop()})`;
+                                currentStatusPrefix = `${label} • Groq #${keyIdx + 1} (${gModel.split('/').pop()})`;
                                 try {
-                                    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                                    const res = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json',
@@ -1734,36 +1751,31 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             temperature: 0.0,
                                             max_tokens: 16384
                                         })
-                                    });
+                                    }, 20000);
                                     const data = await res.json();
                                     if (!res.ok || data.error) {
-                                        lastError = `Groq Key #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
+                                        lastError = `Groq #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
                                         continue;
                                     }
                                     const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
                                     if (parsed) return parsed;
                                 } catch (err) {
-                                    lastError = `Groq Key #${keyIdx + 1}: ${err.message}`;
+                                    lastError = `Groq #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (20s)' : err.message}`;
                                 }
                             }
                         }
                     }
 
-                    // C. Automatic Failover to OpenRouter (sk-or- keys)
+                    // C. Automatic Failover to OpenRouter (sk-or- keys) with 15s timeout so ISP blocks never hang
                     if (openRouterKeys.length > 0) {
-                        const orModels = [
-                            'openrouter/free',
-                            'google/gemini-2.5-flash',
-                            'openai/gpt-4o-mini',
-                            'anthropic/claude-3.5-haiku'
-                        ];
+                        const orModels = ['openrouter/free', 'google/gemini-3.5-flash-lite', 'openai/gpt-4o-mini'];
                         for (let kOffset = 0; kOffset < openRouterKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % openRouterKeys.length;
                             const activeKey = openRouterKeys[keyIdx];
                             for (const orModel of orModels) {
                                 currentStatusPrefix = `${label} • OpenRouter #${keyIdx + 1} (${orModel.split('/').pop()})`;
                                 try {
-                                    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                                    const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
                                         method: 'POST',
                                         headers: {
                                             'Content-Type': 'application/json',
@@ -1776,16 +1788,16 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             messages: toOpenAIMessages(batchParts),
                                             temperature: 0.0
                                         })
-                                    });
+                                    }, 15000);
                                     const data = await res.json();
                                     if (!res.ok || data.error) {
-                                        lastError = `OpenRouter #${keyIdx + 1} (${orModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        lastError = `OpenRouter #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
                                         continue;
                                     }
                                     const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
                                     if (parsed) return parsed;
                                 } catch (err) {
-                                    lastError = `OpenRouter #${keyIdx + 1}: ${err.message}`;
+                                    lastError = `OpenRouter #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (15s)' : err.message}`;
                                 }
                             }
                         }
