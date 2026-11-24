@@ -1693,14 +1693,10 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
-                            const isVertexExpress = activeKey.startsWith('AQ.');
-
                             for (const rawModel of geminiModels) {
-                                const cleanModel = rawModel.replace(/^models\//, '');
-                                currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
-                                const endpoint = isVertexExpress
-                                    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${cleanModel}:generateContent?key=${activeKey}`
-                                    : `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
+    const cleanModel = rawModel.replace(/^models\//, '');
+    currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
 
                                 try {
                                     const res = await fetchWithTimeout(endpoint, {
