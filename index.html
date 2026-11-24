@@ -492,6 +492,9 @@
                         <button onclick="processAIImport()" id="btn-process-import" class="w-full py-3 bg-amber-600 hover:bg-amber-500 text-white rounded-xl font-bold text-xs shadow-lg transition flex items-center justify-center gap-2">
                             <i class="fa-solid fa-microchip"></i> Start AI Extraction & Auto-Tagging
                         </button>
+                        <button id="btn-undo-last-batch" onclick="undoLastBatch()" class="hidden w-full mt-3 py-2.5 px-4 rounded-xl bg-red-950/60 hover:bg-red-900/80 border border-red-500/40 text-red-200 font-medium text-sm transition flex items-center justify-center gap-2">
+    <i class="fa-solid fa-rotate-left"></i> <span id="undo-batch-label">Undo Previous Work</span>
+</button>
                     </div>
                 </div>
 
@@ -1606,6 +1609,8 @@
             if (currentVerificationList.length === 0) return;
             pyqDatabase.unshift(...currentVerificationList);
             saveDatabase();
+            localStorage.setItem('lastAddedBatchCount', currentVerificationList.length);
+updateUndoButtonUI();
             applyFilters();
             document.getElementById('import-verification-area').classList.add('hidden');
             document.getElementById('import-raw-text').value = '';
@@ -1917,6 +1922,35 @@
             }
             document.getElementById('text-popover').classList.add('hidden');
         }
+        function updateUndoButtonUI() {
+    const count = parseInt(localStorage.getItem('lastAddedBatchCount') || '0', 10);
+    const btn = document.getElementById('btn-undo-last-batch');
+    const label = document.getElementById('undo-batch-label');
+    if (!btn || !label) return;
+    if (count > 0 && pyqDatabase.length >= count) {
+        label.textContent = `Undo Previous Work (Remove Last ${count} Questions)`;
+        btn.classList.remove('hidden');
+    } else {
+        btn.classList.add('hidden');
+    }
+}
+
+function undoLastBatch() {
+    const count = parseInt(localStorage.getItem('lastAddedBatchCount') || '0', 10);
+    if (!count || count <= 0 || pyqDatabase.length < count) return;
+
+    const confirmed = confirm(`Do you really want to remove the past ${count} questions?\n\nClick OK for YES (Remove) or Cancel for NO (Keep).`);
+    if (!confirmed) return;
+
+    pyqDatabase.splice(-count, count);
+    localStorage.removeItem('lastAddedBatchCount');
+    saveDatabase();
+    applyFilters();
+    updateUndoButtonUI();
+    alert(`Removed the last ${count} questions from your database.`);
+}
+
+document.addEventListener('DOMContentLoaded', updateUndoButtonUI);
     </script>
 </body>
 </html>
