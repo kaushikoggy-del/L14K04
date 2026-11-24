@@ -3123,7 +3123,40 @@ function renderCbtStage() {
     const st = cbtSession.states[idx];
 
     document.getElementById('cbt-q-num').textContent = idx + 1;
-    document.getElementById('cbt-q-text').textContent = q.text;
+    const qTextEl = document.getElementById('cbt-q-text');
+    if (q.text.includes(' | ')) {
+        const lines = q.text.split('\n');
+        let htmlParts = [];
+        let tableRows = [];
+
+        const flushTable = () => {
+            if (tableRows.length === 0) return;
+            const maxCols = Math.max(...tableRows.map(r => r.length));
+            const rowsHtml = tableRows.map((cells, rIdx) => {
+                while (cells.length < maxCols) cells.push('');
+                const tag = rIdx === 0 ? 'th' : 'td';
+                const cellClass = rIdx === 0
+                    ? 'border border-stone-500 bg-stone-300/70 px-3 py-1.5 font-bold text-left text-sm'
+                    : 'border border-stone-400 px-3 py-1.5 text-sm';
+                return `<tr>${cells.map(c => `<${tag} class="${cellClass}">${c}</${tag}>`).join('')}</tr>`;
+            }).join('');
+            htmlParts.push(`<table class="my-3 w-full max-w-2xl border-collapse border border-stone-500">${rowsHtml}</table>`);
+            tableRows = [];
+        };
+
+        lines.forEach(line => {
+            if (line.includes(' | ')) {
+                tableRows.push(line.split(' | ').map(c => c.trim()));
+            } else {
+                flushTable();
+                htmlParts.push(`<div class="mb-1.5">${line}</div>`);
+            }
+        });
+        flushTable();
+        qTextEl.innerHTML = htmlParts.join('');
+    } else {
+        qTextEl.textContent = q.text;
+    }
 
     // Update Star icon
     const starBtn = document.getElementById('cbt-star-btn');
