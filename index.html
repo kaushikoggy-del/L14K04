@@ -253,10 +253,13 @@
                 <button onclick="switchTab('import')" id="nav-import" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-300 hover:text-white hover:bg-white/5">
                     <i class="fa-solid fa-file-arrow-up"></i> Import & AI Tagger
                 </button>
-                <button onclick="switchTab('notes')" id="nav-notes" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-300 hover:text-white hover:bg-white/5">
-                    <i class="fa-solid fa-book-bookmark"></i> Smart Notes
-                </button>
-            </nav>
+              <button onclick="switchTab('notes')" id="nav-notes" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-400 hover:text-white">
+                        <i class="fa-solid fa-book-bookmark"></i> Smart Notes
+                    </button>
+                    <button onclick="switchTab('cbt')" id="nav-cbt" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-teal-300 hover:text-white">
+                        <i class="fa-solid fa-stopwatch"></i> Test Series (CBT)
+                    </button>
+                </nav>
 
             <!-- 3-Dots Menu Button -->
             <div class="relative">
@@ -651,6 +654,137 @@
                 </div>
             </div>
         </section>
+        <!-- ==================== ISOLATED TEST SERIES (CBT) MODULE ==================== -->
+<section id="view-cbt" class="hidden space-y-6">
+    <!-- 1. Test Series Lobby & Isolated Importer -->
+    <div id="cbt-lobby" class="space-y-6">
+        <div class="bg-slate-900/90 border border-slate-800 rounded-2xl p-6 flex flex-wrap items-center justify-between gap-4">
+            <div>
+                <h2 class="text-xl font-bold text-teal-300">Test Series & Mock Simulator (CBT)</h2>
+                <p class="text-xs text-slate-400 mt-1">100% isolated from your PYQ Bank. Practice sectional & full-length mocks in exam-hall CBT mode.</p>
+            </div>
+            <div class="flex flex-wrap gap-2.5">
+                <button onclick="loadSampleCbtTest()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-amber-300 border border-slate-700">+ Load Sample MIH Test</button>
+                <button onclick="document.getElementById('cbt-creator-modal').classList.toggle('hidden')" class="px-4 py-2 rounded-lg bg-teal-700 hover:bg-teal-600 text-xs font-semibold text-white">+ Add New Mock Test</button>
+            </div>
+        </div>
+
+        <!-- Quick Mock Test Importer (Paste Questions + Answer Key) -->
+        <div id="cbt-creator-modal" class="hidden bg-slate-900 border border-teal-800/50 rounded-2xl p-6 space-y-4">
+            <h3 class="text-sm font-bold text-teal-300 uppercase tracking-wider">Create Isolated Mock Test</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <input id="cbt-new-title" type="text" placeholder="Test Title (e.g., Vision IAS MIH Test 2)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+                <input id="cbt-new-duration" type="number" value="60" min="1" placeholder="Duration (Minutes)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+                <input id="cbt-new-keys" type="text" placeholder="Answer Key (e.g., 1-B, 2-C, 3-A...)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+            </div>
+            <textarea id="cbt-new-raw" rows="6" placeholder="Paste questions here in standard format:&#10;1. Question text here...&#10;(a) Option A&#10;(b) Option B&#10;(c) Option C&#10;(d) Option D" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 outline-none focus:border-teal-500"></textarea>
+            <div class="flex justify-end gap-2">
+                <button onclick="document.getElementById('cbt-creator-modal').classList.add('hidden')" class="px-4 py-2 rounded-lg bg-slate-800 text-xs text-slate-300">Cancel</button>
+                <button onclick="saveNewCbtTest()" class="px-5 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white">Save Mock Test</button>
+            </div>
+        </div>
+
+        <!-- Saved Mock Tests List -->
+        <div id="cbt-test-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
+    </div>
+
+    <!-- 2. Full-Screen Vision-Style CBT Arena -->
+    <div id="cbt-arena" class="hidden fixed inset-0 z-50 flex flex-col select-none" style="background:#e9dfc8; color:#2b261d; font-family: Georgia, 'Century Schoolbook', serif;">
+        <!-- Top Teal Header -->
+        <div class="flex items-center justify-between px-5 py-2.5 text-white shadow-md" style="background:#1c4f57;">
+            <div class="flex items-center gap-4">
+                <span class="font-bold tracking-wide text-amber-300 text-sm uppercase">CBT Simulator</span>
+                <span class="h-4 w-px bg-teal-600"></span>
+                <span id="cbt-active-title" class="font-semibold text-sm text-white">MIH Test 2</span>
+            </div>
+
+            <!-- Segmented Digital Timer -->
+            <div class="flex items-center gap-5 text-center">
+                <div>
+                    <div id="cbt-timer-hrs" class="text-lg font-bold leading-none font-sans">0</div>
+                    <div class="text-[10px] text-teal-200 font-sans">Hours</div>
+                </div>
+                <div>
+                    <div id="cbt-timer-mins" class="text-lg font-bold leading-none font-sans">59</div>
+                    <div class="text-[10px] text-teal-200 font-sans">Minutes</div>
+                </div>
+                <div>
+                    <div id="cbt-timer-secs" class="text-lg font-bold leading-none font-sans">00</div>
+                    <div class="text-[10px] text-teal-200 font-sans">Seconds</div>
+                </div>
+            </div>
+
+            <button onclick="confirmSubmitCbt()" class="flex items-center gap-2 px-4 py-1.5 rounded font-sans text-xs font-bold tracking-wider uppercase bg-teal-900/60 hover:bg-red-700 text-amber-200 hover:text-white border border-teal-500/40 transition">
+                <span>⏻</span> SUBMIT
+            </button>
+        </div>
+
+        <!-- Split Body: Left Sidebar + Right Reading Canvas -->
+        <div class="flex flex-1 overflow-hidden">
+            <!-- Left Sidebar (28%) -->
+            <aside class="w-80 flex flex-col border-r" style="background:#dfd3b8; border-color:#c7b99b;">
+                <div class="px-4 py-2.5 text-xs font-bold tracking-wider uppercase border-b font-sans" style="color:#5c513e; border-color:#c7b99b;">
+                    QUESTIONS <span id="cbt-filter-badge" class="ml-1 text-[10px] font-normal text-teal-800"></span>
+                </div>
+
+                <!-- Scrollable Snippet List -->
+                <div id="cbt-sidebar-list" class="flex-1 overflow-y-auto divide-y" style="border-color:#cfc2a5;"></div>
+
+                <!-- Bottom-Left Mutually Exclusive Status Filter Toggles -->
+                <div class="p-3 border-t text-xs font-sans space-y-2" style="background:#d5c7a9; border-color:#bfaF8e;">
+                    <div class="flex items-center justify-between gap-2">
+                        <button id="filter-btn-attempted" onclick="toggleCbtSidebarFilter('attempted')" class="flex items-center gap-1.5 px-2 py-1 rounded transition text-stone-800 hover:bg-black/5">
+                            <span id="filter-box-attempted" class="w-3.5 h-3.5 rounded-full border border-stone-600 inline-block"></span>
+                            <span>Attempted</span>
+                        </button>
+                        <button id="filter-btn-unattempted" onclick="toggleCbtSidebarFilter('unattempted')" class="flex items-center gap-1.5 px-2 py-1 rounded transition text-stone-800 hover:bg-black/5">
+                            <span id="filter-box-unattempted" class="w-3.5 h-3.5 rounded-full border border-stone-600 inline-block"></span>
+                            <span>Unattempted</span>
+                        </button>
+                    </div>
+                    <div class="flex justify-center">
+                        <button id="filter-btn-review" onclick="toggleCbtSidebarFilter('review')" class="flex items-center gap-1.5 px-2.5 py-1 rounded transition text-stone-800 hover:bg-black/5">
+                            <span id="filter-box-review" class="w-3.5 h-3.5 rounded-full border border-stone-600 inline-block"></span>
+                            <span>Mark For Review</span>
+                        </button>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Right Main Question Stage (72%) -->
+            <div class="flex-1 flex flex-col overflow-hidden" style="background:#ede4cf;">
+                <!-- Top Control Strip inside Stage -->
+                <div class="flex items-center justify-between px-8 py-3 border-b" style="border-color:#d6c9ad;">
+                    <div class="text-base font-bold text-stone-700 font-sans">
+                        <span id="cbt-q-num">1</span> <span class="text-stone-400 font-normal">|</span>
+                    </div>
+                    <div class="flex items-center gap-4 font-sans text-xs text-stone-700">
+                        <div class="flex items-center gap-2">
+                            <span>Resize</span>
+                            <input type="range" min="14" max="22" value="16" oninput="document.getElementById('cbt-q-stage-body').style.fontSize = this.value + 'px'" class="w-16 accent-teal-800 cursor-pointer">
+                        </div>
+                        <button id="cbt-star-btn" onclick="toggleCbtStar()" title="Mark for Review" class="text-xl leading-none text-stone-600 hover:text-amber-600 transition">☆</button>
+                    </div>
+                </div>
+
+                <!-- Question & Options Scroll Area -->
+                <div id="cbt-q-stage-body" class="flex-1 overflow-y-auto px-10 py-6 space-y-6" style="font-size:16px; line-height:1.65;">
+                    <div id="cbt-q-text" class="whitespace-pre-line text-stone-900"></div>
+                    <div id="cbt-options-list" class="space-y-2.5 max-w-3xl"></div>
+                </div>
+
+                <!-- Bottom Action Bar (< | SKIP or SAVE AND NEXT | >) -->
+                <div class="flex items-center border-t font-sans" style="background:#1c4f57; border-color:#153e45;">
+                    <button onclick="navigateCbtQuestion(-1)" class="px-6 py-3.5 text-white hover:bg-teal-800 font-bold text-base border-r border-teal-700 transition">‹</button>
+                    <button id="cbt-primary-action-btn" onclick="handleCbtPrimaryAction()" class="flex-1 py-3.5 text-center text-white hover:bg-teal-800 font-bold text-xs tracking-widest uppercase transition">
+                        SKIP
+                    </button>
+                    <button onclick="navigateCbtQuestion(1)" class="px-6 py-3.5 text-white hover:bg-teal-800 font-bold text-base border-l border-teal-700 transition">›</button>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
     </main>
 
     <!-- FLOATING TEXT SELECTION POPOVER -->
@@ -2379,6 +2513,301 @@ function undoLastBatch() {
 }
 
 document.addEventListener('DOMContentLoaded', updateUndoButtonUI);
+        // ==================== ISOLATED CBT TEST SERIES ENGINE (PHASE 1) ====================
+let cbtTestsDb = JSON.parse(localStorage.getItem('upsc_mock_tests_db') || '[]');
+let cbtSession = null;
+let cbtTimerInterval = null;
+
+function switchMainView(target) {
+    // Hide all top-level views if they exist
+    ['view-explorer', 'view-import', 'view-notes', 'view-cbt'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.add('hidden');
+    });
+    const activeEl = document.getElementById('view-' + target);
+    if (activeEl) activeEl.classList.remove('hidden');
+    if (target === 'cbt') renderCbtLobby();
+}
+
+function loadSampleCbtTest() {
+    const sample = {
+        id: 'mock_' + Date.now(),
+        title: 'MIH Test 2 (Sample)',
+        durationMins: 60,
+        questions: [
+            {
+                qNo: 1,
+                text: "With reference to Home Rule League by Annie Besant, consider the following statements:\n1. Unlike Tilak's pan-India Home Rule League, Annie Besant's league had branches confined to Bombay.\n2. It had Jawaharlal Nehru, M. A. Jinnah and Surendranath Banerjea as its members.\nWhich of the statements given above is/are not correct?",
+                options: ["1 only", "2 only", "Both 1 and 2", "Neither 1 nor 2"],
+                answer: "A"
+            },
+            {
+                qNo: 2,
+                text: "In the context of Indian freedom struggle, consider the following differences between Moderates and Extremists:\n1. While the extremists drew their inspiration from Indian history and cultural heritage, moderates drew inspiration from Western liberal thought.\n2. Moderates believed in the efficacy of constitutional agitation within the four walls of law.\nWhich of the statements given above is/are correct?",
+                options: ["1 only", "2 only", "Both 1 and 2", "Neither 1 nor 2"],
+                answer: "C"
+            },
+            {
+                qNo: 3,
+                text: "Which of the following events is/are associated with the Swadeshi Movement?\n1. Public pledges to boycott foreign goods\n2. People tying rakhis on each other's wrists as a symbol of unity\n3. Establishment of National Council of Education\nSelect the correct answer using the code given below:",
+                options: ["1 and 2 only", "2 and 3 only", "1 and 3 only", "1, 2 and 3"],
+                answer: "D"
+            }
+        ]
+    };
+    cbtTestsDb.unshift(sample);
+    localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
+    renderCbtLobby();
+}
+
+function saveNewCbtTest() {
+    const title = document.getElementById('cbt-new-title').value.trim() || 'Untitled Mock Test';
+    const durationMins = parseInt(document.getElementById('cbt-new-duration').value) || 60;
+    const rawText = document.getElementById('cbt-new-raw').value.trim();
+    const keyInput = document.getElementById('cbt-new-keys').value.trim();
+
+    if (!rawText) return alert('Please paste questions text first.');
+
+    const keyMap = {};
+    keyInput.split(/[,;\s]+/).forEach(pair => {
+        const m = pair.match(/^(\d+)[-.:]([A-Da-d])$/);
+        if (m) keyMap[parseInt(m[1])] = m[2].toUpperCase();
+    });
+
+    const blocks = rawText.split(/\n(?=\d+[\.\)]\s)/);
+    const questions = [];
+    blocks.forEach((blk, idx) => {
+        const lines = blk.trim().split('\n');
+        const qNumMatch = lines[0].match(/^(\d+)[\.\)]\s*(.*)/);
+        const qNo = qNumMatch ? parseInt(qNumMatch[1]) : idx + 1;
+        const bodyLines = [];
+        const opts = [];
+        lines.forEach((line, lIdx) => {
+            const cleanLine = lIdx === 0 && qNumMatch ? qNumMatch[2] : line;
+            const optMatch = cleanLine.match(/^\(?([a-dA-D])[\)\.]\s*(.*)/);
+            if (optMatch) opts.push(optMatch[2].trim());
+            else if (cleanLine.trim()) bodyLines.push(cleanLine.trim());
+        });
+        if (bodyLines.length > 0 && opts.length >= 2) {
+            questions.push({
+                qNo,
+                text: bodyLines.join('\n'),
+                options: opts,
+                answer: keyMap[qNo] || 'A'
+            });
+        }
+    });
+
+    if (questions.length === 0) return alert('Could not parse questions. Ensure format is 1. Question... with (a) (b) (c) (d).');
+
+    cbtTestsDb.unshift({ id: 'mock_' + Date.now(), title, durationMins, questions });
+    localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
+    document.getElementById('cbt-creator-modal').classList.add('hidden');
+    renderCbtLobby();
+}
+
+function renderCbtLobby() {
+    const list = document.getElementById('cbt-test-list');
+    if (!list) return;
+    if (cbtTestsDb.length === 0) {
+        list.innerHTML = `<div class="col-span-full text-center py-12 text-xs text-slate-400 bg-slate-900/50 border border-dashed border-slate-800 rounded-2xl">No mock tests added yet. Click <b>+ Load Sample MIH Test</b> or <b>+ Add New Mock Test</b> above.</div>`;
+        return;
+    }
+    list.innerHTML = cbtTestsDb.map((t, idx) => `
+        <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col justify-between gap-4">
+            <div>
+                <div class="flex items-center justify-between">
+                    <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-teal-950 text-teal-300 border border-teal-800/50">${t.questions.length} Qs • ${t.durationMins} Mins</span>
+                    <button onclick="deleteCbtTest(${idx})" class="text-xs text-slate-500 hover:text-red-400">✕</button>
+                </div>
+                <h4 class="font-bold text-slate-100 mt-2.5 text-sm">${t.title}</h4>
+            </div>
+            <button onclick="startCbtTest(${idx})" class="w-full py-2 rounded-lg bg-teal-700 hover:bg-teal-600 text-white font-bold text-xs tracking-wide transition">Start CBT Test →</button>
+        </div>
+    `).join('');
+}
+
+function deleteCbtTest(idx) {
+    if (!confirm('Delete this mock test?')) return;
+    cbtTestsDb.splice(idx, 1);
+    localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
+    renderCbtLobby();
+}
+
+function startCbtTest(testIdx) {
+    const test = cbtTestsDb[testIdx];
+    cbtSession = {
+        test,
+        currentIndex: 0,
+        remainingSeconds: test.durationMins * 60,
+        activeFilter: null, // 'attempted' | 'unattempted' | 'review' | null
+        states: test.questions.map(() => ({
+            selectedOption: null, // 'A' | 'B' | 'C' | 'D' | null
+            starred: false
+        }))
+    };
+
+    document.getElementById('cbt-active-title').textContent = test.title;
+    document.getElementById('cbt-arena').classList.remove('hidden');
+    startCbtTimer();
+    renderCbtStage();
+    renderCbtSidebar();
+}
+
+function startCbtTimer() {
+    clearInterval(cbtTimerInterval);
+    const updateDisplay = () => {
+        const s = Math.max(0, cbtSession.remainingSeconds);
+        document.getElementById('cbt-timer-hrs').textContent = Math.floor(s / 3600);
+        document.getElementById('cbt-timer-mins').textContent = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+        document.getElementById('cbt-timer-secs').textContent = String(s % 60).padStart(2, '0');
+    };
+    updateDisplay();
+    cbtTimerInterval = setInterval(() => {
+        cbtSession.remainingSeconds--;
+        updateDisplay();
+        if (cbtSession.remainingSeconds <= 0) {
+            clearInterval(cbtTimerInterval);
+            alert('Time is up! Submitting your test.');
+            document.getElementById('cbt-arena').classList.add('hidden');
+        }
+    }, 1000);
+}
+
+function renderCbtStage() {
+    const idx = cbtSession.currentIndex;
+    const q = cbtSession.test.questions[idx];
+    const st = cbtSession.states[idx];
+
+    document.getElementById('cbt-q-num').textContent = idx + 1;
+    document.getElementById('cbt-q-text').textContent = q.text;
+
+    // Update Star icon
+    const starBtn = document.getElementById('cbt-star-btn');
+    starBtn.textContent = st.starred ? '★' : '☆';
+    starBtn.style.color = st.starred ? '#d97706' : '#57534e';
+
+    // Render Options (A, B, C, D)
+    const letters = ['A', 'B', 'C', 'D'];
+    document.getElementById('cbt-options-list').innerHTML = q.options.map((opt, oIdx) => {
+        const letter = letters[oIdx];
+        const isSelected = st.selectedOption === letter;
+        return `
+            <div onclick="selectCbtOption('${letter}')"
+                 class="flex items-center gap-3.5 px-4 py-3 rounded cursor-pointer transition border"
+                 style="background:${isSelected ? '#c6d3b6' : 'transparent'}; border-color:${isSelected ? '#7b9468' : 'transparent'};">
+                <span class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold font-sans shrink-0"
+                      style="background:${isSelected ? '#1c4f57' : '#2b261d'}; color:#fff;">
+                    ${letter}
+                </span>
+                <span class="text-stone-900">${opt}</span>
+            </div>
+        `;
+    }).join('');
+
+    // Dynamic Primary Button: SKIP when unanswered, SAVE AND NEXT when option selected
+    const primaryBtn = document.getElementById('cbt-primary-action-btn');
+    primaryBtn.textContent = st.selectedOption ? 'SAVE AND NEXT' : 'SKIP';
+}
+
+function selectCbtOption(letter) {
+    const st = cbtSession.states[cbtSession.currentIndex];
+    // Clicking already selected option clears it; otherwise selects it
+    st.selectedOption = (st.selectedOption === letter) ? null : letter;
+    renderCbtStage();
+    renderCbtSidebar();
+}
+
+function toggleCbtStar() {
+    const st = cbtSession.states[cbtSession.currentIndex];
+    st.starred = !st.starred;
+    renderCbtStage();
+    renderCbtSidebar();
+}
+
+function handleCbtPrimaryAction() {
+    renderCbtSidebar();
+    navigateCbtQuestion(1);
+}
+
+function navigateCbtQuestion(delta) {
+    const next = cbtSession.currentIndex + delta;
+    if (next >= 0 && next < cbtSession.test.questions.length) {
+        cbtSession.currentIndex = next;
+        renderCbtStage();
+        renderCbtSidebar();
+    }
+}
+
+function toggleCbtSidebarFilter(filterName) {
+    // Mutually exclusive: clicking active filter turns it off; clicking another switches exclusively
+    cbtSession.activeFilter = (cbtSession.activeFilter === filterName) ? null : filterName;
+    updateFilterToggleStyles();
+    renderCbtSidebar();
+}
+
+function updateFilterToggleStyles() {
+    ['attempted', 'unattempted', 'review'].forEach(f => {
+        const isActive = cbtSession.activeFilter === f;
+        const box = document.getElementById('filter-box-' + f);
+        const btn = document.getElementById('filter-btn-' + f);
+        if (box) {
+            box.style.background = isActive ? '#1c4f57' : 'transparent';
+            box.style.borderColor = isActive ? '#1c4f57' : '#57534e';
+        }
+        if (btn) btn.style.fontWeight = isActive ? '700' : '400';
+    });
+    const badge = document.getElementById('cbt-filter-badge');
+    if (badge) badge.textContent = cbtSession.activeFilter ? `(${cbtSession.activeFilter.toUpperCase()})` : '';
+}
+
+function renderCbtSidebar() {
+    const container = document.getElementById('cbt-sidebar-list');
+    if (!container || !cbtSession) return;
+
+    const filter = cbtSession.activeFilter;
+    const rows = cbtSession.test.questions.map((q, idx) => ({ q, idx, st: cbtSession.states[idx] }))
+        .filter(({ st }) => {
+            if (!filter) return true;
+            if (filter === 'attempted') return st.selectedOption !== null;
+            if (filter === 'unattempted') return st.selectedOption === null;
+            if (filter === 'review') return st.starred === true;
+            return true;
+        });
+
+    if (rows.length === 0) {
+        container.innerHTML = `<div class="p-6 text-center text-xs font-sans text-stone-600">No questions in this filter.</div>`;
+        return;
+    }
+
+    container.innerHTML = rows.map(({ q, idx, st }) => {
+        const isCurrent = idx === cbtSession.currentIndex;
+        // Dynamic Badge Priority: Starred -> ★ | Answered -> Filled Box/Circle | Unanswered -> Empty Box/Circle
+        let badgeHtml = '';
+        if (st.starred) {
+            badgeHtml = `<span class="w-6 h-6 rounded flex items-center justify-center text-sm font-bold shrink-0" style="background:#f59e0b; color:#fff;" title="Marked for Review">★</span>`;
+        } else if (st.selectedOption) {
+            badgeHtml = `<span class="w-6 h-6 rounded flex items-center justify-center text-xs font-bold font-sans shrink-0" style="background:#1c4f57; color:#fff;">${idx + 1}</span>`;
+        } else {
+            badgeHtml = `<span class="w-6 h-6 rounded flex items-center justify-center text-xs font-bold font-sans shrink-0 border" style="background:transparent; border-color:#8c7f65; color:#5c513e;">${idx + 1}</span>`;
+        }
+
+        const snippet = q.text.replace(/\n/g, ' ').slice(0, 95) + (q.text.length > 95 ? '...' : '');
+        return `
+            <div onclick="cbtSession.currentIndex=${idx}; renderCbtStage(); renderCbtSidebar();"
+                 class="flex items-start gap-3 px-3.5 py-3 cursor-pointer transition"
+                 style="background:${isCurrent ? '#cfc1a3' : 'transparent'};">
+                ${badgeHtml}
+                <p class="text-xs leading-snug text-stone-800 line-clamp-3">${snippet}</p>
+            </div>
+        `;
+    }).join('');
+}
+
+function confirmSubmitCbt() {
+    clearInterval(cbtTimerInterval);
+    document.getElementById('cbt-arena').classList.add('hidden');
+}
     </script>
 </body>
 </html>
