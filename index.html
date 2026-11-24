@@ -1396,28 +1396,29 @@
         }
 
         async function callGeminiAI(apiKey, exam, year, rawText, answerKey, fileObj) {
-            // Prompt for Gemini asking to auto-classify Subject and Micro-Theme
-            const promptText = `You are a Senior UPSC Exam Analyst. Parse the given questions and official answer key into JSON format.
+            const promptText = `You are a Senior UPSC Exam Parser. Extract ALL questions from the provided content/PDF and match them with the Official Answer Keys.
             Target Exam: ${exam}
             Target Year: ${year}
             Official Answer Keys Provided: ${answerKey}
             
             Available Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
             
-            Return ONLY a valid JSON array of question objects with these exact keys:
+            IMPORTANT: Extract EVERY question present (up to 100 questions). Keep output compact—do NOT generate eliminationLogic or peripheralKnowledge yet.
+            
+            Return ONLY a valid JSON array with these exact keys:
             [
               {
-                "id": "pyq_gen_1",
+                "id": "pyq_${year}_1",
                 "exam": "${exam}",
                 "year": ${year},
                 "subject": "<Exact match from Available Subjects>",
                 "theme": "<Accurate Micro-theme topic name>",
-                "question": "<Full question text>",
+                "question": "<Full question text including numbered statements>",
                 "options": ["<Option A>", "<Option B>", "<Option C>", "<Option D>"],
                 "correctAnswer": "<Full text of correct option>",
                 "officialKey": "<A or B or C or D>",
-                "eliminationLogic": "<Detailed option-by-option elimination reasoning>",
-                "peripheralKnowledge": "<Core high-yield UPSC facts related to topic>"
+                "eliminationLogic": "Pending deep AI enrichment.",
+                "peripheralKnowledge": "Pending deep AI enrichment."
               }
             ]
             
@@ -1441,7 +1442,7 @@
                 });
             }
 
-           const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+            const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
             const listData = await listRes.json();
             if (!listRes.ok || listData.error) {
                 throw new Error(listData.error?.message || `Key check HTTP ${listRes.status}`);
@@ -1462,7 +1463,11 @@
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    contents: [{ parts }]
+                    contents: [{ parts }],
+                    generationConfig: {
+                        maxOutputTokens: 65536,
+                        temperature: 0.1
+                    }
                 })
             });
 
@@ -1475,8 +1480,8 @@
             if (jsonMatch) {
                 return JSON.parse(jsonMatch[0]);
             }
-            throw new Error("Gemini returned text instead of JSON. Try a smaller 5-10 question PDF/screenshot batch.");
-}
+            throw new Error("Gemini returned text instead of JSON. Try splitting into 50-question halves.");
+        }
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
 
