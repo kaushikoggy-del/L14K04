@@ -1795,17 +1795,21 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                 }
 
                 // Compact verbatim prompt
-                const buildPrompt = (extraContent = '') => `Extract ALL UPSC MCQs verbatim as a JSON array.
+                const buildPrompt = (extraContent = '') => `Extract EVERY UPSC MCQ printed in this batch 100% VERBATIM as a JSON array.
 Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
-Format: [{"qNum":1,"subject":"...","theme":"...","question":"exact full text","options":["A text","B text","C text","D text"],"officialKey":"A"}]
-Rules: Verbatim text & all statements. Include exact printed qNum. Return ONLY valid JSON.
+Format: [{"qNum":1,"subject":"...","theme":"...","question":"exact full text including all statements/lists","options":["A text","B text","C text","D text"],"officialKey":"A"}]
+CRITICAL RULES:
+- Do NOT skip ANY question! Extract EVERY single numbered question present in the input.
+- Copy the exact printed question number into "qNum" (integer).
+- Keep all numbered statements (1., 2., 3.) and pairs verbatim inside "question".
+- Return ONLY a valid JSON array, no markdown or commentary.
 ${extraContent}`;
 
                 let allParsed = [];
 
-                // 4. Micro-batched PDF processing (2 lightweight grayscale pages per call = ~70KB payload, distributed across all keys)
+                // 4. Micro-batched PDF processing (2 pages per call with boundary overlap so zero questions are cut off or truncated)
                 if (fileObj && (fileObj.type === 'application/pdf' || fileObj.name.toLowerCase().endsWith('.pdf')) && window.pdfjsLib) {
-                    if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Preparing lightweight batches (${rawKeys.length} key${rawKeys.length > 1 ? 's' : ''} active)...`;
+                    if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Preparing 2-page precision batches (${rawKeys.length} key${rawKeys.length > 1 ? 's' : ''} active)...`;
                     const arrayBuffer = await fileObj.arrayBuffer();
                     const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
@@ -1820,9 +1824,9 @@ ${extraContent}`;
                     }
 
                     const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
-                    const pagesPerBatch = isDigitalText ? 5 : 2;
+                    const pagesPerBatch = 2; // Strictly 2 pages per batch (~8-10 Qs) so output tokens never truncate
                     const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
-                    let avgBatchSec = isDigitalText ? 5 : 7;
+                    let avgBatchSec = isDigitalText ? 5 : 8;
 
                     startEtaTimer(totalBatches * avgBatchSec);
                     let completedBatchTimes = [];
@@ -1834,22 +1838,32 @@ ${extraContent}`;
                         const batchLabel = `Batch ${b + 1}/${totalBatches} (P.${startPage}-${endPage})`;
 
                         if (isDigitalText) {
-                            const chunkText = pageTexts.slice(startPage - 1, endPage).join('\n\n');
+                            // Include tail of previous page & head of next page so questions split across page breaks are never missed
+                            const prevTail = startPage > 1 ? pageTexts[startPage - 2].slice(-700) : '';
+                            const nextHead = endPage < pdfDoc.numPages ? pageTexts[endPage].slice(0, 700) : '';
+                            const chunkText = [
+                                prevTail ? `[CONTEXT FROM PREVIOUS PAGE END]:\n${prevTail}` : '',
+                                `[MAIN PAGES ${startPage}-${endPage}]:\n${pageTexts.slice(startPage - 1, endPage).join('\n\n')}`,
+                                nextHead ? `[CONTEXT FROM NEXT PAGE START]:\n${nextHead}` : ''
+                            ].filter(Boolean).join('\n\n');
+
                             const resItems = await runBatchExtraction([{ text: buildPrompt(chunkText) }], batchLabel);
                             allParsed.push(...resItems);
                         } else {
-                            currentStatusPrefix = `Compressing ${batchLabel}`;
+                            currentStatusPrefix = `Rendering ${batchLabel}`;
                             const imgParts = [{ text: buildPrompt() }];
-                            for (let p = startPage; p <= endPage; p++) {
+                            // Overlap 1 page on scans if a question spans a page break
+                            const scanEnd = endPage < pdfDoc.numPages ? endPage + 1 : endPage;
+                            for (let p = startPage; p <= scanEnd; p++) {
                                 const page = await pdfDoc.getPage(p);
-                                const viewport = page.getViewport({ scale: 1.15 });
+                                const viewport = page.getViewport({ scale: 1.25 });
                                 const canvas = document.createElement('canvas');
                                 canvas.width = viewport.width;
                                 canvas.height = viewport.height;
                                 const ctx = canvas.getContext('2d');
-                                ctx.filter = 'grayscale(100%) contrast(125%)';
+                                ctx.filter = 'grayscale(100%) contrast(130%)';
                                 await page.render({ canvasContext: ctx, viewport }).promise;
-                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.58).split(',')[1];
+                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.65).split(',')[1];
                                 imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
                             }
                             const resItems = await runBatchExtraction(imgParts, batchLabel);
@@ -1880,12 +1894,13 @@ ${extraContent}`;
                     allParsed = await runBatchExtraction(parts, 'Extracting Questions');
                 }
 
-                // 5. Deduplicate by question number & FORCE-LOCK official answer keys deterministically in JS
+                // 5. Deduplicate by valid qNum & FORCE-LOCK official answer keys deterministically in JS
                 const seen = new Set();
                 const finalized = [];
                 for (let idx = 0; idx < allParsed.length; idx++) {
                     const item = allParsed[idx];
-                    const qNum = parseInt(item.qNum, 10) || (idx + 1);
+                    const parsedNum = parseInt(item.qNum, 10);
+                    const qNum = (!isNaN(parsedNum) && parsedNum > 0) ? parsedNum : (idx + 1000);
                     if (seen.has(qNum)) continue;
                     seen.add(qNum);
 
