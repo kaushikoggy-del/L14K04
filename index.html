@@ -2743,6 +2743,59 @@ async function extractDigitalTextFromPdf(file, statusLabel) {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
 
+    // Helper: extract actual drawn rectangle boxes from PDF vector graphics (for UPSC table questions)
+    const extractDrawnBoxes = async (page) => {
+        const ops = await page.getOperatorList();
+        const rects = [];
+        let curX = 0, curY = 0, subPaths = [];
+        for (let i = 0; i < ops.fnArray.length; i++) {
+            const fn = ops.fnArray[i];
+            const args = ops.argsArray[i];
+            if (fn === pdfjsLib.OPS.rectangle) {
+                const [x, y, w, h] = args;
+                if (Math.abs(w) > 15 && Math.abs(h) > 10 && Math.abs(h) < 300) {
+                    rects.push({
+                        x1: Math.min(x, x + w),
+                        x2: Math.max(x, x + w),
+                        y1: Math.min(y, y + h),
+                        y2: Math.max(y, y + h)
+                    });
+                }
+            } else if (fn === pdfjsLib.OPS.constructPath) {
+                const [subOps, coords] = args;
+                let ci = 0;
+                for (const sop of subOps) {
+                    if (sop === pdfjsLib.OPS.rectangle) {
+                        const x = coords[ci++], y = coords[ci++], w = coords[ci++], h = coords[ci++];
+                        if (Math.abs(w) > 15 && Math.abs(h) > 10 && Math.abs(h) < 300) {
+                            rects.push({
+                                x1: Math.min(x, x + w),
+                                x2: Math.max(x, x + w),
+                                y1: Math.min(y, y + h),
+                                y2: Math.max(y, y + h)
+                            });
+                        }
+                    } else if (sop === pdfjsLib.OPS.moveTo) {
+                        curX = coords[ci++]; curY = coords[ci++];
+                        subPaths = [[curX, curY]];
+                    } else if (sop === pdfjsLib.OPS.lineTo) {
+                        curX = coords[ci++]; curY = coords[ci++];
+                        subPaths.push([curX, curY]);
+                    } else if (sop === pdfjsLib.OPS.closePath && subPaths.length >= 4) {
+                        const xs = subPaths.map(p => p[0]), ys = subPaths.map(p => p[1]);
+                        const x1 = Math.min(...xs), x2 = Math.max(...xs);
+                        const y1 = Math.min(...ys), y2 = Math.max(...ys);
+                        if ((x2 - x1) > 15 && (y2 - y1) > 10 && (y2 - y1) < 300) {
+                            rects.push({ x1, x2, y1, y2 });
+                        }
+                        subPaths = [];
+                    }
+                }
+            }
+        }
+        return rects;
+    };
+
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         if (statusLabel && pageNum % 5 === 0) {
             statusLabel.textContent = `Reading PDF page ${pageNum} of ${pdf.numPages}...`;
@@ -2751,49 +2804,100 @@ async function extractDigitalTextFromPdf(file, statusLabel) {
         const viewport = page.getViewport({ scale: 1.0 });
         const midX = viewport.width * 0.48;
         const content = await page.getTextContent();
+        const boxes = await extractDrawnBoxes(page);
 
-        // Detect if page uses 2-column coaching layout
         const items = content.items.filter(it => it.str && it.str.trim());
         const leftItems = items.filter(it => it.transform && it.transform[4] < midX);
         const rightItems = items.filter(it => it.transform && it.transform[4] >= midX);
         const isTwoColumn = leftItems.length > 15 && rightItems.length > 15;
 
-        const buildColumnLines = (colItems) => {
-            colItems.sort((a, b) => {
+        const buildColumnLines = (colItems, minX, maxX) => {
+            // Find drawn table cell boxes belonging to this column
+            const colBoxes = boxes.filter(b => b.x1 >= minX - 10 && b.x2 <= maxX + 10);
+
+            // Group boxes into table rows (boxes sharing same top/bottom Y within 4px)
+            const tableRowGroups = [];
+            const usedBox = new Set();
+            const sortedBoxes = [...colBoxes].sort((a, b) => b.y2 - a.y2 || a.x1 - b.x1);
+
+            for (let i = 0; i < sortedBoxes.length; i++) {
+                if (usedBox.has(i)) continue;
+                const row = [sortedBoxes[i]];
+                usedBox.add(i);
+                for (let j = i + 1; j < sortedBoxes.length; j++) {
+                    if (usedBox.has(j)) continue;
+                    if (Math.abs(sortedBoxes[j].y2 - sortedBoxes[i].y2) < 5 && Math.abs(sortedBoxes[j].y1 - sortedBoxes[i].y1) < 5) {
+                        row.push(sortedBoxes[j]);
+                        usedBox.add(j);
+                    }
+                }
+                if (row.length >= 2) {
+                    row.sort((a, b) => a.x1 - b.x1);
+                    tableRowGroups.push({
+                        yTop: Math.max(...row.map(r => r.y2)),
+                        yBot: Math.min(...row.map(r => r.y1)),
+                        cells: row
+                    });
+                }
+            }
+
+            // Assign text items inside drawn table boxes directly to those cells
+            const itemInTable = new Set();
+            const syntheticRows = tableRowGroups.map(rg => {
+                const cellTexts = rg.cells.map(cell => {
+                    const inside = [];
+                    colItems.forEach((it, idx) => {
+                        const tx = it.transform[4] + (it.width || 4) * 0.3;
+                        const ty = it.transform[5] + 3;
+                        if (tx >= cell.x1 - 2 && tx <= cell.x2 + 2 && ty >= cell.y1 - 2 && ty <= cell.y2 + 2) {
+                            inside.push(it);
+                            itemInTable.add(idx);
+                        }
+                    });
+                    inside.sort((a, b) => {
+                        const dy = b.transform[5] - a.transform[5];
+                        return Math.abs(dy) > 4 ? dy : a.transform[4] - b.transform[4];
+                    });
+                    return inside.map(it => it.str.trim()).join(' ');
+                });
+                return {
+                    y: rg.yTop,
+                    text: '[[TBL_ROW]] ' + cellTexts.join(' || ')
+                };
+            });
+
+            // Normal non-table lines
+            const normalItems = colItems.filter((_, idx) => !itemInTable.has(idx));
+            normalItems.sort((a, b) => {
                 const dy = b.transform[5] - a.transform[5];
                 return Math.abs(dy) > 4 ? dy : a.transform[4] - b.transform[4];
             });
-            let lastY = null;
-            let lastEndX = null;
-            let lines = [];
-            let cur = '';
-            for (const it of colItems) {
-                const x = it.transform[4];
-                const y = it.transform[5];
-                const w = it.width || (it.str.length * 4.5);
 
+            const entries = [];
+            let lastY = null, cur = '', curY = null;
+            for (const it of normalItems) {
+                const y = it.transform[5];
                 if (lastY !== null && Math.abs(y - lastY) > 4) {
-                    if (cur.trim()) lines.push(cur.trim());
+                    if (cur.trim()) entries.push({ y: curY, text: cur.trim() });
                     cur = it.str;
+                    curY = y;
                 } else {
-                    const gap = (lastEndX !== null) ? (x - lastEndX) : 0;
-                    if (cur && gap > 18) {
-                        cur += ' | ' + it.str;
-                    } else {
-                        cur += (cur && !cur.endsWith(' ') ? ' ' : '') + it.str;
-                    }
+                    if (!cur) curY = y;
+                    cur += (cur && !cur.endsWith(' ') ? ' ' : '') + it.str;
                 }
                 lastY = y;
-                lastEndX = x + w;
             }
-            if (cur.trim()) lines.push(cur.trim());
-            return lines.join('\n');
+            if (cur.trim()) entries.push({ y: curY, text: cur.trim() });
+
+            // Merge normal lines and drawn table rows in exact top-to-bottom Y order
+            const merged = [...entries, ...syntheticRows].sort((a, b) => b.y - a.y);
+            return merged.map(m => m.text).join('\n');
         };
 
         if (isTwoColumn) {
-            fullText += buildColumnLines(leftItems) + '\n' + buildColumnLines(rightItems) + '\n';
+            fullText += buildColumnLines(leftItems, 0, midX) + '\n' + buildColumnLines(rightItems, midX, viewport.width) + '\n';
         } else {
-            fullText += buildColumnLines(items) + '\n';
+            fullText += buildColumnLines(items, 0, viewport.width) + '\n';
         }
     }
     return fullText;
