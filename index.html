@@ -1675,11 +1675,10 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     // A. Try Gemini Keys (rotated across all provided AIza keys)
                     if (geminiKeys.length > 0) {
                         const geminiModels = [
-                            'models/gemini-3.5-flash-lite',
-                            'models/gemini-3.1-flash-lite',
-                            'models/gemini-2.5-flash',
-                            'models/gemini-2.0-flash'
-                        ];
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+    'gemini-3.1-flash-lite'
+];
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
