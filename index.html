@@ -762,8 +762,8 @@
                 <span id="cbt-active-title" class="font-semibold text-sm text-white">MIH Test 2</span>
             </div>
 
-            <!-- Segmented Digital Timer -->
-            <div class="flex items-center gap-5 text-center">
+            <!-- Segmented Digital Timer (Hidden in View Mode) -->
+            <div id="cbt-timer-wrap" class="flex items-center gap-5 text-center">
                 <div>
                     <div id="cbt-timer-hrs" class="text-lg font-bold leading-none font-sans">0</div>
                     <div class="text-[10px] text-teal-200 font-sans">Hours</div>
@@ -778,9 +778,20 @@
                 </div>
             </div>
 
-            <button onclick="confirmSubmitCbt()" class="flex items-center gap-2 px-4 py-1.5 rounded font-sans text-xs font-bold tracking-wider uppercase bg-teal-900/60 hover:bg-red-700 text-amber-200 hover:text-white border border-teal-500/40 transition">
+            <!-- Live Test Submit Button -->
+            <button id="cbt-submit-btn" onclick="confirmSubmitCbt()" class="flex items-center gap-2 px-4 py-1.5 rounded font-sans text-xs font-bold tracking-wider uppercase bg-teal-900/60 hover:bg-red-700 text-amber-200 hover:text-white border border-teal-500/40 transition">
                 <span>⏻</span> SUBMIT
             </button>
+
+            <!-- View Mode Controls (Back + Start Test) -->
+            <div id="cbt-view-controls" class="hidden flex items-center gap-2.5 font-sans">
+                <button onclick="exitCbtViewMode()" class="px-3.5 py-1.5 rounded text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600 transition">
+                    ← Back
+                </button>
+                <button onclick="switchFromViewToLiveTest()" class="px-4 py-1.5 rounded text-xs font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 transition">
+                    ▶ Start Test
+                </button>
+            </div>
         </div>
 
         <!-- Split Body: Left Sidebar + Right Reading Canvas -->
