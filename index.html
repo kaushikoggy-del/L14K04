@@ -2808,32 +2808,45 @@ function parseCbtQuestionsBlock(rawText, expMap) {
         .replace(/\r/g, '')
         .replace(/\s+\(([a-dA-D])\)\s+/g, '\n($1) ');
 
-    const blocks = normalized.split(/\n(?=(?:Q\.?\s*)?\d+[\.\)]\s)/i);
+    const lines = normalized.split('\n');
+    const rawBlocks = [];
+    let expectedQNo = 1;
+    let currentBlock = null;
+
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || /^Page\s+\d+/i.test(line)) continue;
+
+        // Match ONLY when line starts with the exact next sequential Question Number (1, 2, 3...)
+        const qStart = line.match(/^(?:Q\.?\s*)?(\d+)[\.\)]\s+(.*)/i);
+        if (qStart && parseInt(qStart[1]) === expectedQNo) {
+            if (currentBlock) rawBlocks.push(currentBlock);
+            currentBlock = { qNo: expectedQNo, lines: [qStart[2]] };
+            expectedQNo++;
+        } else if (currentBlock) {
+            currentBlock.lines.push(line);
+        }
+    }
+    if (currentBlock) rawBlocks.push(currentBlock);
+
     const questions = [];
-
-    blocks.forEach((blk) => {
-        const lines = blk.trim().split('\n');
-        const qNumMatch = lines[0].match(/^(?:Q\.?\s*)?(\d+)[\.\)]\s*(.*)/i);
-        if (!qNumMatch) return;
-
-        const qNo = parseInt(qNumMatch[1]);
+    rawBlocks.forEach(blk => {
         const bodyLines = [];
         const opts = [];
 
-        lines.forEach((line, lIdx) => {
-            const cleanLine = lIdx === 0 ? qNumMatch[2] : line;
-            const optMatch = cleanLine.match(/^\(?([a-dA-D])[\)\.]\s*(.*)/);
+        blk.lines.forEach(line => {
+            const optMatch = line.match(/^\(?([a-dA-D])[\)\.]\s*(.*)/);
             if (optMatch) {
                 opts.push(optMatch[2].trim());
-            } else if (cleanLine.trim() && !/^Page\s+\d+/i.test(cleanLine.trim())) {
-                bodyLines.push(cleanLine.trim());
+            } else {
+                bodyLines.push(line);
             }
         });
 
         if (bodyLines.length > 0 && opts.length >= 2) {
-            const expEntry = expMap[qNo] || {};
+            const expEntry = expMap[blk.qNo] || {};
             questions.push({
-                qNo,
+                qNo: blk.qNo,
                 text: bodyLines.join('\n'),
                 options: opts.slice(0, 4),
                 answer: expEntry.answer || 'A',
@@ -2967,7 +2980,12 @@ function renderCbtLobby() {
                 <h4 class="font-bold text-slate-100 mt-2.5 text-sm">${t.title}</h4>
                 <p class="text-[11px] text-slate-400 mt-1">Marking: +${pos} / -${neg.toFixed(2)} • ${expCount}/${t.questions.length} Explanations</p>
             </div>
-            <button onclick="startCbtTest(${idx})" class="w-full py-2 rounded-lg bg-teal-700 hover:bg-teal-600 text-white font-bold text-xs tracking-wide transition">Start CBT Test →</button>
+           <div class="flex items-center gap-2">
+                <button onclick="viewCbtTest(${idx})" class="px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 font-bold text-xs transition flex items-center gap-1.5">
+                    <i class="fa-solid fa-eye"></i> View
+                </button>
+                <button onclick="startCbtTest(${idx})" class="flex-1 py-2 rounded-lg bg-teal-700 hover:bg-teal-600 text-white font-bold text-xs tracking-wide transition">Start CBT Test →</button>
+            </div>
         </div>
         `;
     }).join('');
@@ -2980,24 +2998,54 @@ function deleteCbtTest(idx) {
     renderCbtLobby();
 }
 
+function viewCbtTest(testIdx) {
+    launchCbtArena(testIdx, true);
+}
+
 function startCbtTest(testIdx) {
+    launchCbtArena(testIdx, false);
+}
+
+function launchCbtArena(testIdx, isViewOnly) {
     const test = cbtTestsDb[testIdx];
+    clearInterval(cbtTimerInterval);
+
     cbtSession = {
         test,
+        testIdx,
+        isViewOnly,
         currentIndex: 0,
         remainingSeconds: test.durationMins * 60,
-        activeFilter: null, // 'attempted' | 'unattempted' | 'review' | null
+        activeFilter: null,
         states: test.questions.map(() => ({
-            selectedOption: null, // 'A' | 'B' | 'C' | 'D' | null
+            selectedOption: null,
             starred: false
         }))
     };
 
-    document.getElementById('cbt-active-title').textContent = test.title;
+    document.getElementById('cbt-active-title').textContent = isViewOnly
+        ? `${test.title} (Preview Mode)`
+        : test.title;
+
+    // Toggle Header Controls between View Mode and Live Exam Mode
+    document.getElementById('cbt-timer-wrap').classList.toggle('hidden', isViewOnly);
+    document.getElementById('cbt-submit-btn').classList.toggle('hidden', isViewOnly);
+    document.getElementById('cbt-view-controls').classList.toggle('hidden', !isViewOnly);
+
     document.getElementById('cbt-arena').classList.remove('hidden');
-    startCbtTimer();
+    if (!isViewOnly) startCbtTimer();
     renderCbtStage();
     renderCbtSidebar();
+}
+
+function exitCbtViewMode() {
+    clearInterval(cbtTimerInterval);
+    document.getElementById('cbt-arena').classList.add('hidden');
+}
+
+function switchFromViewToLiveTest() {
+    if (!cbtSession) return;
+    launchCbtArena(cbtSession.testIdx, false);
 }
 
 function startCbtTimer() {
@@ -3057,8 +3105,8 @@ function renderCbtStage() {
 }
 
 function selectCbtOption(letter) {
+    if (cbtSession.isViewOnly) return;
     const st = cbtSession.states[cbtSession.currentIndex];
-    // Clicking already selected option clears it; otherwise selects it
     st.selectedOption = (st.selectedOption === letter) ? null : letter;
     renderCbtStage();
     renderCbtSidebar();
