@@ -994,7 +994,7 @@
         function detectKeyBadge(key) {
             const k = (key || '').trim();
             if (!k) return { label: 'Empty', cls: 'bg-gray-800 text-gray-500 border-gray-700' };
-            if (k.startsWith('AIza')) return { label: 'Gemini', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' };
+if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 'bg-amber-500/20 text-amber-300 border-amber-500/40' };
             if (k.startsWith('gsk_')) return { label: 'Groq AI', cls: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' };
             if (k.startsWith('sk-or-')) return { label: 'OpenRouter', cls: 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40' };
             return { label: 'Custom', cls: 'bg-purple-500/20 text-purple-300 border-purple-500/40' };
@@ -1623,7 +1623,7 @@
                     throw new Error("No valid API key found. Open Settings (⋮) and paste 1 to 10 API keys separated by commas.");
                 }
 
-                const geminiKeys = rawKeys.filter(k => k.startsWith('AIza'));
+               const geminiKeys = rawKeys.filter(k => k.startsWith('AIza') || k.startsWith('AQ.'));
                 const openRouterKeys = rawKeys.filter(k => k.startsWith('sk-or-'));
                 const groqKeys = rawKeys.filter(k => k.startsWith('gsk_'));
                 let rrCounter = 0;
