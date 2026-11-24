@@ -3216,7 +3216,84 @@ async function processAndSaveCbtTest() {
     try {
         if (!qRaw && selectedCbtQFile && selectedCbtQFile.type === 'application/pdf') {
             statusEl.textContent = 'Extracting Question Paper PDF...';
-            qRaw = await extractDigitalTextFromPdf(selectedCbtQFile, statusEl
+            qRaw = await extractDigitalTextFromPdf(selectedCbtQFile, statusEl);
+        }
+
+        if (!expRaw && selectedCbtExpFile) {
+            statusEl.textContent = 'Extracting Explanation Key PDF...';
+            expRaw = await extractDigitalTextFromPdf(selectedCbtExpFile, statusEl);
+        }
+
+        statusEl.textContent = 'Matching questions with answers & explanations...';
+        const expMap = parseCbtExplanationData(expRaw);
+        let questions = parseCbtQuestionsBlock(qRaw, expMap);
+
+        if (questions.length === 0 && selectedCbtQFile && typeof extractQuestionsFromUploadedFile === 'function') {
+            statusEl.textContent = 'Scanned PDF/Image detected — switching to Gemini AI Vision...';
+            const aiQs = await extractQuestionsFromUploadedFile(selectedCbtQFile, {});
+            questions = aiQs.map((q, idx) => {
+                const qNo = q.qNo || idx + 1;
+                const expEntry = expMap[qNo] || {};
+                return {
+                    qNo,
+                    text: q.question || q.text,
+                    options: q.options || [],
+                    answer: expEntry.answer || q.officialKey || 'A',
+                    explanation: expEntry.explanation || ''
+                };
+            });
+        }
+
+        if (questions.length === 0) {
+            throw new Error('Could not parse questions. Ensure PDF is readable or format is 1. Question... (a) (b) (c) (d).');
+        }
+
+        // Hybrid AI Vision Repair for Table/Pair Questions
+        questions = await repairTableQuestionsViaGeminiVision(selectedCbtQFile, questions, statusEl);
+
+        const marking = exam === 'CSAT'
+            ? { positive: 2.5, negative: 2.5 / 3, totalTargetQs: 80 }
+            : { positive: 2.0, negative: 2.0 / 3, totalTargetQs: 100 };
+
+        const durationMins = exam === 'CSAT'
+            ? Math.max(10, Math.round(questions.length * 1.5))
+            : Math.max(10, Math.round(questions.length * 1.2));
+
+        const title = `${coaching} ${series} (${testType}) - ${testNoOrSubject}`;
+        cbtTestsDb.unshift({
+            id: 'mock_' + Date.now(),
+            exam,
+            coaching,
+            series,
+            testType,
+            testNoOrSubject,
+            title,
+            durationMins,
+            marking,
+            questions
+        });
+
+        localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
+
+        selectedCbtQFile = null;
+        selectedCbtExpFile = null;
+        document.getElementById('cbt-new-raw').value = '';
+        document.getElementById('cbt-exp-raw').value = '';
+        document.getElementById('cbt-q-file').value = '';
+        document.getElementById('cbt-exp-file').value = '';
+        document.getElementById('cbt-q-file-label').textContent = 'Upload Question Paper PDF (up to 50MB) or Image';
+        document.getElementById('cbt-exp-file-label').textContent = 'Upload Explanation Key PDF (up to 50MB)';
+        statusEl.textContent = '';
+        document.getElementById('cbt-creator-modal').classList.add('hidden');
+        renderCbtLobby();
+        alert(`Saved "${title}" with ${questions.length} questions (${exam} Marking: +${marking.positive} / -${marking.negative.toFixed(2)})!`);
+    } catch (err) {
+        statusEl.textContent = '';
+        alert(err.message);
+    } finally {
+        btn.disabled = false;
+    }
+}
 
 function renderCbtLobby() {
     initCbtHierarchyDropdowns();
@@ -3253,7 +3330,6 @@ function renderCbtLobby() {
         `;
     }).join('');
 }
-
 function deleteCbtTest(idx) {
     if (!confirm('Delete this mock test?')) return;
     cbtTestsDb.splice(idx, 1);
