@@ -2838,7 +2838,12 @@ function parseCbtQuestionsBlock(rawText, expMap) {
 
     for (const rawLine of lines) {
         const line = rawLine.trim();
-        if (!line || /^Page\s+\d+/i.test(line)) continue;
+        if (
+            !line ||
+            /^Page\s+\d+/i.test(line) ||
+            /^(?:VAJIRAM\s*&?\s*RAVI|VISION\s*IAS|FORUM\s*IAS|NEXT\s*IAS|DRISHTI\s*IAS|INSIGHTS\s*IAS|PW\s*ONLYIAS|SHUNYA\s*IAS|RAU'?S\s*IAS|GS\s*SCORE|LEVELUP\s*IAS)$/i.test(line) ||
+            /^(?:www\.|https?:\/\/|©|All\s+Rights\s+Reserved|CAMP\s*\d*|PTS\s*\d*|Prelims\s+Test\s+Series)/i.test(line)
+        ) continue;
 
         const isOptionLine = /^\([a-dA-D]\)\s+/.test(line);
         const qStart = line.match(/^(?:Q\.?\s*)?(\d+)[\.\)]\s+(.*)/i);
