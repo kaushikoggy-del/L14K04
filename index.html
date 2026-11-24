@@ -1683,21 +1683,17 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     const currentBatchIdx = rrCounter++;
                     let lastError = "All configured AI keys/models are busy.";
 
-                    // A. Try Gemini Keys First (Supports both AIza... and AQ.... keys natively)
+                   // A. Try Gemini Keys First (Works for both AIza... and AQ.... keys)
+                    let geminiError = "";
                     if (geminiKeys.length > 0) {
+                        const modelsToTry = ['gemini-3.5-flash-lite', 'gemini-3.8-flash'];
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
-                            const isAQ = activeKey.startsWith('AQ.');
-                            const modelsToTry = isAQ
-                                ? ['gemini-2.5-flash', 'gemini-2.5-flash-lite']
-                                : ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash'];
 
                             for (const cleanModel of modelsToTry) {
                                 currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
-                                const endpoint = isAQ
-                                    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${cleanModel}:generateContent?key=${activeKey}`
-                                    : `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
+                                const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
 
                                 try {
                                     const res = await fetchWithTimeout(endpoint, {
@@ -1705,25 +1701,60 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                         headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({
                                             contents: [{ role: 'user', parts: batchParts }],
-                                            generationConfig: { maxOutputTokens: 8192, temperature: 0.0 }
+                                            generationConfig: { maxOutputTokens: 16384, temperature: 0.0 }
                                         })
                                     }, 25000);
                                     const data = await res.json();
                                     if (!res.ok || data.error) {
-                                        lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        geminiError = `Gemini #${keyIdx + 1} (${cleanModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        lastError = geminiError;
                                         if ([400, 401, 403, 429].includes(res.status)) break;
                                         continue;
                                     }
                                     const parsed = extractJsonArray(data.candidates?.[0]?.content?.parts?.[0]?.text);
                                     if (parsed) return parsed;
-                                    lastError = `Gemini #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
+                                    geminiError = `Gemini #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
+                                    lastError = geminiError;
                                 } catch (err) {
-                                    lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (25s)' : err.message}`;
+                                    geminiError = `Gemini #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (25s)' : err.message}`;
+                                    lastError = geminiError;
                                 }
                             }
                         }
                     }
 
+                    // B. Automatic Failover to Groq (gsk_ keys) when Gemini is busy
+                    if (groqKeys.length > 0) {
+                        for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
+                            const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
+                            const activeKey = groqKeys[keyIdx];
+                            currentStatusPrefix = `${label} • Groq #${keyIdx + 1} (llama-3.3-70b-versatile)`;
+                            try {
+                                const res = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
+                                    method: 'POST',
+                                    headers: {
+                                        'Content-Type': 'application/json',
+                                        'Authorization': `Bearer ${activeKey}`
+                                    },
+                                    body: JSON.stringify({
+                                        model: 'llama-3.3-70b-versatile',
+                                        messages: toOpenAIMessages(batchParts),
+                                        temperature: 0.0,
+                                        max_tokens: 8192
+                                    })
+                                }, 25000);
+                                const data = await res.json();
+                                if (!res.ok || data.error) {
+                                    lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
+                                    continue;
+                                }
+                                const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
+                                if (parsed) return parsed;
+                            } catch (err) {
+                                lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (25s)' : err.message}`;
+                            }
+                        }
+                    }
                     // B. Automatic Failover to Groq (gsk_ keys) when Gemini is busy
                     if (groqKeys.length > 0) {
                         const hasImages = batchParts.some(p => p.inlineData);
