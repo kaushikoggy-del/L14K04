@@ -2804,9 +2804,10 @@ function parseCbtExplanationData(rawExp) {
 }
 
 function parseCbtQuestionsBlock(rawText, expMap) {
+    // Normalize inline options like "(a) ... (b) ... (c) ... (d) ..." or "a) ... b) ..." onto separate lines
     const normalized = rawText
         .replace(/\r/g, '')
-        .replace(/\s+\(([a-dA-D])\)\s+/g, '\n($1) ');
+        .replace(/(?:^|\s+)\(?([a-dA-D])[\)\.]\s+/g, '\n($1) ');
 
     const lines = normalized.split('\n');
     const rawBlocks = [];
@@ -2818,15 +2819,22 @@ function parseCbtQuestionsBlock(rawText, expMap) {
         const line = rawLine.trim();
         if (!line || /^Page\s+\d+/i.test(line)) continue;
 
-        const isOptionLine = /^\(?[a-dA-D][\)\.]\s+/.test(line);
+        const isOptionLine = /^\([a-dA-D]\)\s+/.test(line);
         const qStart = line.match(/^(?:Q\.?\s*)?(\d+)[\.\)]\s+(.*)/i);
+        const qNum = qStart ? parseInt(qStart[1]) : null;
 
-        // Naya question tabhi maano jab pichle question ke kam se kam 2 options aa chuke hon
-        if (qStart && parseInt(qStart[1]) === expectedQNo && (expectedQNo === 1 || currentOptCount >= 2)) {
+        // Start a new question when:
+        // 1) It's Q1, OR
+        // 2) It's the next sequential QNo AND previous question has options, OR
+        // 3) Previous question already collected 4 options and we see the next QNo (or QNo+1)
+        const isNextSequential = qNum !== null && qNum === expectedQNo && (expectedQNo === 1 || currentOptCount >= 1);
+        const isAfterFullOptions = qNum !== null && qNum >= expectedQNo && qNum <= expectedQNo + 2 && currentOptCount >= 4;
+
+        if (isNextSequential || isAfterFullOptions) {
             if (currentBlock) rawBlocks.push(currentBlock);
-            currentBlock = { qNo: expectedQNo, lines: [qStart[2]] };
+            currentBlock = { qNo: qNum, lines: [qStart[2]] };
             currentOptCount = 0;
-            expectedQNo++;
+            expectedQNo = qNum + 1;
         } else if (currentBlock) {
             currentBlock.lines.push(line);
             if (isOptionLine) currentOptCount++;
@@ -2840,7 +2848,7 @@ function parseCbtQuestionsBlock(rawText, expMap) {
         const opts = [];
 
         blk.lines.forEach(line => {
-            const optMatch = line.match(/^\(?([a-dA-D])[\)\.]\s*(.*)/);
+            const optMatch = line.match(/^\(([a-dA-D])\)\s*(.*)/);
             if (optMatch) {
                 opts.push(optMatch[2].trim());
             } else {
