@@ -979,7 +979,6 @@
                 }
             } catch (_) {}
 
-            // Migrate any existing keys from upsc_gemini_api_key into slots
             const legacyKeys = (localStorage.getItem('upsc_gemini_api_key') || '')
                 .split(/[\s,;]+/)
                 .map(k => k.trim())
@@ -1002,28 +1001,30 @@
         }
 
         function ensureApiVaultModalExists() {
-            if (document.getElementById('modal-api-key')) return;
+            let existing = document.getElementById('modal-api-vault-10');
+            if (existing) return existing;
+
             const wrapper = document.createElement('div');
             wrapper.innerHTML = `
-            <div id="modal-api-key" class="hidden fixed inset-0 z-[9999] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+            <div id="modal-api-vault-10" style="z-index: 99999; background: rgba(0, 0, 0, 0.85);" class="hidden fixed inset-0 backdrop-blur-sm flex items-center justify-center p-4">
                 <div class="bg-[#111827] border border-gray-700 rounded-2xl w-full max-w-2xl max-h-[88vh] flex flex-col shadow-2xl overflow-hidden">
                     <div class="flex items-center justify-between px-5 py-4 border-b border-gray-800 bg-[#0d1320]">
                         <div>
                             <h3 class="text-base font-bold text-white flex items-center gap-2">
                                 <i class="fa-solid fa-shield-halved text-amber-400"></i> Multi-AI & 10-Slot API Key Vault
                             </h3>
-                            <p class="text-[11px] text-gray-400 mt-0.5">All enabled keys rotate automatically across batches to eliminate rate limits.</p>
+                            <p class="text-[11px] text-gray-400 mt-0.5">Rename any slot on the left, paste its API key on the right, and check the box to activate.</p>
                         </div>
-                        <button onclick="closeModal('modal-api-key')" class="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center justify-center">
+                        <button type="button" onclick="closeApiVaultModal()" class="w-8 h-8 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 flex items-center justify-center">
                             <i class="fa-solid fa-xmark"></i>
                         </button>
                     </div>
 
                     <div class="flex border-b border-gray-800 bg-[#0f1623] px-5 pt-2 gap-2 text-xs font-semibold">
-                        <button id="tab-btn-vault" onclick="switchApiVaultTab('vault')" class="px-3.5 py-2 rounded-t-lg border-b-2 border-amber-400 text-amber-400">
+                        <button type="button" id="tab-btn-vault" onclick="switchApiVaultTab('vault')" class="px-3.5 py-2 rounded-t-lg border-b-2 border-amber-400 text-amber-400">
                             <i class="fa-solid fa-key mr-1.5"></i>10 Renameable Key Slots
                         </button>
-                        <button id="tab-btn-providers" onclick="switchApiVaultTab('providers')" class="px-3.5 py-2 rounded-t-lg border-b-2 border-transparent text-gray-400 hover:text-gray-200">
+                        <button type="button" id="tab-btn-providers" onclick="switchApiVaultTab('providers')" class="px-3.5 py-2 rounded-t-lg border-b-2 border-transparent text-gray-400 hover:text-gray-200">
                             <i class="fa-solid fa-plug mr-1.5"></i>Connect Other AI Providers
                         </button>
                     </div>
@@ -1059,8 +1060,8 @@
                     <div class="px-5 py-3.5 border-t border-gray-800 bg-[#0d1320] flex items-center justify-between">
                         <span id="vault-active-summary" class="text-xs text-gray-400">0 active keys configured</span>
                         <div class="flex items-center gap-2.5">
-                            <button onclick="closeModal('modal-api-key')" class="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold">Cancel</button>
-                            <button onclick="saveApiKey()" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold shadow-lg">
+                            <button type="button" onclick="closeApiVaultModal()" class="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold">Cancel</button>
+                            <button type="button" onclick="saveApiKey()" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold shadow-lg">
                                 <i class="fa-solid fa-floppy-disk mr-1"></i> Save All Slots
                             </button>
                         </div>
@@ -1068,6 +1069,12 @@
                 </div>
             </div>`;
             document.body.appendChild(wrapper.firstElementChild);
+            return document.getElementById('modal-api-vault-10');
+        }
+
+        function closeApiVaultModal() {
+            const m = document.getElementById('modal-api-vault-10');
+            if (m) m.classList.add('hidden');
         }
 
         function switchApiVaultTab(tab) {
@@ -1090,8 +1097,8 @@
                 return `
                 <div class="flex flex-wrap sm:flex-nowrap items-center gap-2 p-2.5 rounded-xl bg-gray-900/90 border border-gray-800 hover:border-gray-700">
                     <input type="checkbox" id="vault-enabled-${idx}" ${slot.enabled ? 'checked' : ''} title="Enable/Disable this key" class="w-4 h-4 accent-amber-500 cursor-pointer shrink-0">
-                    <input type="text" id="vault-name-${idx}" value="${slot.name.replace(/"/g, '&quot;')}" placeholder="Rename Slot ${idx + 1}" class="w-36 sm:w-40 bg-black/50 border border-gray-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-semibold outline-none shrink-0">
-                    <input type="password" id="vault-key-${idx}" value="${slot.key.replace(/"/g, '&quot;')}" oninput="updateSlotBadge(${idx})" placeholder="Paste AIza... / gsk_... / sk-or-..." class="flex-1 min-w-[140px] bg-black/50 border border-gray-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 font-mono outline-none">
+                    <input type="text" id="vault-name-${idx}" value="${slot.name.replace(/"/g, '&quot;')}" placeholder="Rename Slot ${idx + 1}" class="w-36 sm:w-40 bg-black/50 border border-gray-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-xs text-amber-300 font-semibold outline-none shrink-0" title="Click to rename this slot">
+                    <input type="text" id="vault-key-${idx}" value="${slot.key.replace(/"/g, '&quot;')}" oninput="updateSlotBadge(${idx})" placeholder="Paste API Key (AIza... / gsk_... / sk-or-...)" class="flex-1 min-w-[140px] bg-black/50 border border-gray-700 focus:border-amber-500 rounded-lg px-2.5 py-1.5 text-xs text-gray-200 font-mono outline-none">
                     <span id="vault-badge-${idx}" class="px-2 py-1 rounded text-[10px] font-bold border ${badge.cls} shrink-0 w-20 text-center">${badge.label}</span>
                     <button type="button" onclick="clearVaultSlot(${idx})" title="Clear slot" class="text-gray-500 hover:text-rose-400 px-1.5 py-1 text-xs shrink-0">
                         <i class="fa-solid fa-trash"></i>
@@ -1121,11 +1128,11 @@
 
         function openApiKeyModal(initialTab = 'vault') {
             const menu = document.getElementById('app-menu');
-            if (menu && !menu.classList.contains('hidden')) toggleMenu();
-            ensureApiVaultModalExists();
+            if (menu && !menu.classList.contains('hidden')) menu.classList.add('hidden');
+            const modal = ensureApiVaultModalExists();
             renderApiVaultRows();
             switchApiVaultTab(initialTab);
-            document.getElementById('modal-api-key').classList.remove('hidden');
+            modal.classList.remove('hidden');
         }
 
         function saveApiKey() {
@@ -1151,7 +1158,7 @@
                 statusEl.textContent = `${activeKeys.length} Active Key${activeKeys.length > 1 ? 's' : ''}`;
                 statusEl.className = 'px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30';
             }
-            closeModal('modal-api-key');
+            closeApiVaultModal();
         }
 
         function openDisplaySettingsModal() {
