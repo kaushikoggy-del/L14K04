@@ -753,6 +753,43 @@
     </div>
 
     <!-- 2. Full-Screen Vision-Style CBT Arena -->
+    <!-- CBT QUESTION EDITOR MODAL (FOR PREVIEW MODE FIXES) -->
+<div id="cbt-edit-modal" class="hidden fixed inset-0 z-[70] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 font-sans">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-2xl p-6 shadow-2xl space-y-4 text-slate-100 max-h-[90vh] overflow-y-auto">
+        <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 class="text-base font-bold text-amber-400">Edit Question #<span id="cbt-edit-qno">1</span></h3>
+            <button onclick="closeCbtQuestionEditor()" class="text-slate-400 hover:text-white text-lg">✕</button>
+        </div>
+        <div class="space-y-3 text-xs">
+            <div>
+                <label class="block text-slate-400 font-semibold mb-1">Question Text <span class="text-slate-500 font-normal">(Table rows ke liye: <code class="text-amber-300">[[TBL_ROW]] Col 1 || Col 2</code>)</span></label>
+                <textarea id="cbt-edit-text" rows="7" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-slate-100 font-mono text-xs leading-relaxed focus:border-teal-500 outline-none"></textarea>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                    <label class="block text-slate-400 font-semibold mb-1">Option (A)</label>
+                    <input id="cbt-edit-opt-0" type="text" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 focus:border-teal-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-slate-400 font-semibold mb-1">Option (B)</label>
+                    <input id="cbt-edit-opt-1" type="text" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 focus:border-teal-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-slate-400 font-semibold mb-1">Option (C)</label>
+                    <input id="cbt-edit-opt-2" type="text" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 focus:border-teal-500 outline-none">
+                </div>
+                <div>
+                    <label class="block text-slate-400 font-semibold mb-1">Option (D)</label>
+                    <input id="cbt-edit-opt-3" type="text" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-slate-100 focus:border-teal-500 outline-none">
+                </div>
+            </div>
+        </div>
+        <div class="flex items-center justify-end gap-3 pt-2 border-t border-slate-800">
+            <button onclick="closeCbtQuestionEditor()" class="px-4 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold">Cancel</button>
+            <button onclick="saveCbtEditedQuestion()" class="px-5 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-white text-xs font-bold">Save Changes</button>
+        </div>
+    </div>
+</div>
     <div id="cbt-arena" class="hidden fixed inset-0 z-50 flex flex-col select-none" style="background:#e9dfc8; color:#2b261d; font-family: Georgia, 'Century Schoolbook', serif;">
         <!-- Top Teal Header -->
         <div class="flex items-center justify-between px-5 py-2.5 text-white shadow-md" style="background:#1c4f57;">
@@ -834,10 +871,15 @@
                         <span id="cbt-q-num">1</span> <span class="text-stone-400 font-normal">|</span>
                     </div>
                     <div class="flex items-center gap-4 font-sans text-xs text-stone-700">
-                        <div class="flex items-center gap-2">
-                            <span>Resize</span>
-                            <input type="range" min="14" max="22" value="16" oninput="document.getElementById('cbt-q-stage-body').style.fontSize = this.value + 'px'" class="w-16 accent-teal-800 cursor-pointer">
-                        </div>
+                        <div class="flex items-center gap-3 text-xs font-bold text-stone-600 font-sans">
+                    <button id="cbt-edit-q-btn" onclick="openCbtQuestionEditor()" class="hidden px-3 py-1 rounded bg-amber-600 hover:bg-amber-500 text-white font-bold text-xs shadow-sm transition flex items-center gap-1.5">
+                        <i class="fa-solid fa-pen-to-square"></i> Edit Q
+                    </button>
+                    <div class="flex items-center gap-2">
+                        <span>Resize</span>
+                        <input type="range" min="14" max="24" value="18" oninput="resizeCbtFont(this.value)" class="w-20 accent-teal-800 cursor-pointer">
+                    </div>
+                </div>
                         <button id="cbt-star-btn" onclick="toggleCbtStar()" title="Mark for Review" class="text-xl leading-none text-stone-600 hover:text-amber-600 transition">☆</button>
                     </div>
                 </div>
@@ -3030,6 +3072,129 @@ function parseCbtQuestionsBlock(rawText, expMap) {
     return questions;
 }
 
+function getAvailableGeminiKeysForCbt() {
+    const keys = [];
+    try {
+        const single = localStorage.getItem('gemini_api_key') || localStorage.getItem('GEMINI_API_KEY');
+        if (single && single.trim().startsWith('AIza')) keys.push(single.trim());
+
+        const multiRaw = localStorage.getItem('gemini_api_keys') || localStorage.getItem('upsc_gemini_keys');
+        if (multiRaw) {
+            const parsed = JSON.parse(multiRaw);
+            if (Array.isArray(parsed)) {
+                parsed.forEach(k => {
+                    const val = typeof k === 'string' ? k : (k && k.key);
+                    if (val && val.trim().startsWith('AIza') && !keys.includes(val.trim())) keys.push(val.trim());
+                });
+            }
+        }
+        for (let i = 0; i < localStorage.length; i++) {
+            const v = localStorage.getItem(localStorage.key(i)) || '';
+            const matches = v.match(/AIza[0-9A-Za-z\-_]{30,}/g);
+            if (matches) matches.forEach(m => { if (!keys.includes(m)) keys.push(m); });
+        }
+    } catch (e) {}
+    return keys;
+}
+
+async function repairTableQuestionsViaGeminiVision(pdfFile, questions, statusEl) {
+    if (!pdfFile || pdfFile.type !== 'application/pdf') return questions;
+    const apiKeys = getAvailableGeminiKeysForCbt();
+    if (apiKeys.length === 0) return questions;
+
+    const tableCandidates = questions.filter(q =>
+        /\[\[TBL_ROW\]\]|consider the following pairs|how many of the above rows|how many of the pairs|List\s*[-–]?\s*I\b|correctly matched\?/i.test(q.text)
+    );
+    if (tableCandidates.length === 0) return questions;
+
+    const arrayBuffer = await pdfFile.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+
+    const pageToQs = {};
+    for (let p = 1; p <= pdf.numPages; p++) {
+        const page = await pdf.getPage(p);
+        const tc = await page.getTextContent();
+        const pageStr = tc.items.map(it => it.str).join(' ');
+        tableCandidates.forEach(q => {
+            const snippet = q.text.replace(/\[\[TBL_ROW\]\]/g, '').replace(/\s+/g, ' ').trim().slice(0, 45);
+            if (snippet.length > 12 && pageStr.includes(snippet.slice(0, 25))) {
+                if (!pageToQs[p]) pageToQs[p] = [];
+                if (!pageToQs[p].some(x => x.qNo === q.qNo)) pageToQs[p].push(q);
+            }
+        });
+    }
+
+    const pagesToFix = Object.keys(pageToQs).map(Number);
+    if (pagesToFix.length === 0) return questions;
+
+    let keyIdx = 0;
+    for (let i = 0; i < pagesToFix.length; i++) {
+        const pNum = pagesToFix[i];
+        const targetQs = pageToQs[pNum];
+        const qNumsStr = targetQs.map(q => q.qNo).join(', ');
+        if (statusEl) statusEl.textContent = `AI Repairing Table Qs (${qNumsStr}) [${i + 1}/${pagesToFix.length}]...`;
+
+        try {
+            const page = await pdf.getPage(pNum);
+            const viewport = page.getViewport({ scale: 1.8 });
+            const canvas = document.createElement('canvas');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext('2d');
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            const base64Img = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
+
+            const prompt = `Extract ONLY Question number(s) ${qNumsStr} from this UPSC test page image.
+Preserve exact wording. Whenever a question has a table or matching columns, format EVERY row of the table on its own line starting with [[TBL_ROW]] and separate columns with || (double pipe).
+Example:
+Consider the following pairs:
+[[TBL_ROW]] Sl. No. || Fundamental Right || Includes
+[[TBL_ROW]] 1. || Right to Equality || Protection of interests of Minorities
+How many of the pairs given above are correctly matched?
+
+Return ONLY valid JSON array: [{"qNo": 11, "text": "...", "options": ["optA", "optB", "optC", "optD"]}]`;
+
+            const apiKey = apiKeys[keyIdx % apiKeys.length];
+            keyIdx++;
+
+            const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    contents: [{
+                        parts: [
+                            { text: prompt },
+                            { inline_data: { mime_type: 'image/jpeg', data: base64Img } }
+                        ]
+                    }],
+                    generationConfig: { temperature: 0.1, response_mime_type: 'application/json' }
+                })
+            });
+
+            if (resp.ok) {
+                const data = await resp.json();
+                const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+                const fixedList = JSON.parse(rawJson);
+                if (Array.isArray(fixedList)) {
+                    fixedList.forEach(fixed => {
+                        const target = questions.find(q => q.qNo === Number(fixed.qNo));
+                        if (target && fixed.text) {
+                            target.text = fixed.text.trim();
+                            if (Array.isArray(fixed.options) && fixed.options.length >= 2) {
+                                target.options = fixed.options.slice(0, 4).map(o => o.replace(/^\(?[a-dA-D][\)\.]\s*/, '').trim());
+                            }
+                        }
+                    });
+                }
+            }
+        } catch (err) {
+            console.warn(`AI table repair skipped for page ${pNum}:`, err);
+        }
+    }
+
+    return questions;
+}
+
 async function processAndSaveCbtTest() {
     const exam = document.getElementById('cbt-param-exam').value;
     const coaching = document.getElementById('cbt-param-coaching').value;
@@ -3051,81 +3216,7 @@ async function processAndSaveCbtTest() {
     try {
         if (!qRaw && selectedCbtQFile && selectedCbtQFile.type === 'application/pdf') {
             statusEl.textContent = 'Extracting Question Paper PDF...';
-            qRaw = await extractDigitalTextFromPdf(selectedCbtQFile, statusEl);
-        }
-
-        if (!expRaw && selectedCbtExpFile) {
-            statusEl.textContent = 'Extracting Explanation Key PDF...';
-            expRaw = await extractDigitalTextFromPdf(selectedCbtExpFile, statusEl);
-        }
-
-        statusEl.textContent = 'Matching questions with answers & explanations...';
-        const expMap = parseCbtExplanationData(expRaw);
-        let questions = parseCbtQuestionsBlock(qRaw, expMap);
-
-        if (questions.length === 0 && selectedCbtQFile && typeof extractQuestionsFromUploadedFile === 'function') {
-            statusEl.textContent = 'Scanned PDF/Image detected — switching to Gemini AI Vision...';
-            const aiQs = await extractQuestionsFromUploadedFile(selectedCbtQFile, {});
-            questions = aiQs.map((q, idx) => {
-                const qNo = q.qNo || idx + 1;
-                const expEntry = expMap[qNo] || {};
-                return {
-                    qNo,
-                    text: q.question || q.text,
-                    options: q.options || [],
-                    answer: expEntry.answer || q.officialKey || 'A',
-                    explanation: expEntry.explanation || ''
-                };
-            });
-        }
-
-        if (questions.length === 0) {
-            throw new Error('Could not parse questions. Ensure PDF is readable or format is 1. Question... (a) (b) (c) (d).');
-        }
-
-        const marking = exam === 'CSAT'
-            ? { positive: 2.5, negative: 2.5 / 3, totalTargetQs: 80 }
-            : { positive: 2.0, negative: 2.0 / 3, totalTargetQs: 100 };
-
-        const durationMins = exam === 'CSAT'
-            ? Math.max(10, Math.round(questions.length * 1.5))
-            : Math.max(10, Math.round(questions.length * 1.2));
-
-        const title = `${coaching} ${series} (${testType}) - ${testNoOrSubject}`;
-        cbtTestsDb.unshift({
-            id: 'mock_' + Date.now(),
-            exam,
-            coaching,
-            series,
-            testType,
-            testNoOrSubject,
-            title,
-            durationMins,
-            marking,
-            questions
-        });
-
-        localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
-
-        selectedCbtQFile = null;
-        selectedCbtExpFile = null;
-        document.getElementById('cbt-new-raw').value = '';
-        document.getElementById('cbt-exp-raw').value = '';
-        document.getElementById('cbt-q-file').value = '';
-        document.getElementById('cbt-exp-file').value = '';
-        document.getElementById('cbt-q-file-label').textContent = 'Upload Question Paper PDF (up to 50MB) or Image';
-        document.getElementById('cbt-exp-file-label').textContent = 'Upload Explanation Key PDF (up to 50MB)';
-        statusEl.textContent = '';
-        document.getElementById('cbt-creator-modal').classList.add('hidden');
-        renderCbtLobby();
-        alert(`Saved "${title}" with ${questions.length} questions (${exam} Marking: +${marking.positive} / -${marking.negative.toFixed(2)})!`);
-    } catch (err) {
-        statusEl.textContent = '';
-        alert(err.message);
-    } finally {
-        btn.disabled = false;
-    }
-}
+            qRaw = await extractDigitalTextFromPdf(selectedCbtQFile, statusEl
 
 function renderCbtLobby() {
     initCbtHierarchyDropdowns();
@@ -3203,6 +3294,7 @@ function launchCbtArena(testIdx, isViewOnly) {
     document.getElementById('cbt-timer-wrap').classList.toggle('hidden', isViewOnly);
     document.getElementById('cbt-submit-btn').classList.toggle('hidden', isViewOnly);
     document.getElementById('cbt-view-controls').classList.toggle('hidden', !isViewOnly);
+    document.getElementById('cbt-edit-q-btn').classList.toggle('hidden', !isViewOnly);
 
     document.getElementById('cbt-arena').classList.remove('hidden');
     if (!isViewOnly) startCbtTimer();
