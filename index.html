@@ -1442,45 +1442,107 @@
                 });
             }
 
-            const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-            const listData = await listRes.json();
-            if (!listRes.ok || listData.error) {
-                throw new Error(listData.error?.message || `Key check HTTP ${listRes.status}`);
-            }
-            const validModels = (listData.models || []).filter(m =>
-                m.supportedGenerationMethods?.includes('generateContent') &&
-                /gemini/i.test(m.name) &&
-                !/embedding|aqa|imagen|veo|tts|audio|live/i.test(m.name)
-            );
-            const preferred = validModels.find(m => /gemini-3.*flash/i.test(m.name))
-                || validModels.find(m => /flash/i.test(m.name))
-                || validModels[0];
-            if (!preferred) {
-                throw new Error("No generateContent Gemini models available for this API key.");
-            }
-
-            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${preferred.name}:generateContent?key=${apiKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{ parts }],
-                    generationConfig: {
-                        maxOutputTokens: 65536,
-                        temperature: 0.1
+            // 1. Discover all free multimodal models active on your API key
+            let modelPool = [
+                'models/gemini-3.5-flash-lite',
+                'models/gemini-3.8-flash',
+                'models/gemini-3.6-flash',
+                'models/gemini-3.1-flash-lite'
+            ];
+            try {
+                const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+                const listData = await listRes.json();
+                if (listRes.ok && listData.models) {
+                    const discovered = listData.models
+                        .filter(m =>
+                            m.supportedGenerationMethods?.includes('generateContent') &&
+                            /gemini/i.test(m.name) &&
+                            !/embedding|aqa|imagen|veo|tts|audio|live|gemma|argon|pro/i.test(m.name)
+                        )
+                        .map(m => m.name);
+                    if (discovered.length > 0) {
+                        // Prioritize fast free-tier models first, followed by any other discovered Gemini models
+                        const priority = ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-3.1-flash-lite'];
+                        modelPool = [
+                            ...priority.map(p => discovered.find(d => d.includes(p))).filter(Boolean),
+                            ...discovered.filter(d => !priority.some(p => d.includes(p)))
+                        ];
                     }
-                })
-            });
+                }
+            } catch (_) { /* Fallback silently to default free pool */ }
 
-            const data = await res.json();
-            if (!res.ok || data.error) {
-                throw new Error(data.error?.message || `API HTTP ${res.status}`);
-            }
-            const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-            const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-            if (jsonMatch) {
+            // 2. Helper to call a single model with instant abort support
+            const trySingleModel = async (modelName, signal) => {
+                const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    signal,
+                    body: JSON.stringify({
+                        contents: [{ parts }],
+                        generationConfig: {
+                            maxOutputTokens: 65536,
+                            temperature: 0.1
+                        }
+                    })
+                });
+                const data = await res.json();
+                if (!res.ok || data.error) {
+                    throw new Error(`${modelName}: ${data.error?.message || `HTTP ${res.status}`}`);
+                }
+                const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+                const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                if (!jsonMatch) {
+                    throw new Error(`${modelName}: Non-JSON response.`);
+                }
                 return JSON.parse(jsonMatch[0]);
+            };
+
+            // 3. Zero-delay staggered race: if primary hits traffic/503 or stalls >5s, backup launches immediately
+            const controllers = modelPool.map(() => new AbortController());
+            try {
+                return await new Promise((resolve, reject) => {
+                    let activeIndex = 0;
+                    let completed = false;
+                    let failures = 0;
+                    const errors = [];
+
+                    const launchNext = () => {
+                        if (completed || activeIndex >= modelPool.length) return;
+                        const idx = activeIndex++;
+                        const modelName = modelPool[idx];
+
+                        // If this model takes >5s to respond, stagger-launch the next model automatically
+                        const staggerTimer = setTimeout(() => {
+                            if (!completed) launchNext();
+                        }, 5000);
+
+                        trySingleModel(modelName, controllers[idx].signal)
+                            .then(result => {
+                                clearTimeout(staggerTimer);
+                                if (!completed) {
+                                    completed = true;
+                                    controllers.forEach((c, i) => { if (i !== idx) c.abort(); });
+                                    resolve(result);
+                                }
+                            })
+                            .catch(err => {
+                                clearTimeout(staggerTimer);
+                                if (completed) return;
+                                errors.push(err.message);
+                                failures++;
+                                if (failures >= modelPool.length) {
+                                    reject(new Error(errors[0] || "All free Gemini models busy."));
+                                } else {
+                                    launchNext(); // Instant failover on 503/429 without waiting
+                                }
+                            });
+                    };
+
+                    launchNext();
+                });
+            } finally {
+                controllers.forEach(c => c.abort());
             }
-            throw new Error("Gemini returned text instead of JSON. Try splitting into 50-question halves.");
         }
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
