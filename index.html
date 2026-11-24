@@ -1938,7 +1938,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                    // A. Try Gemini Keys First (Works for both AIza... and AQ.... keys)
                     let geminiError = "";
                     if (geminiKeys.length > 0) {
-                        const modelsToTry = ['gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+                        const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
@@ -2055,7 +2055,7 @@ for (let attempt = 0; attempt < 3; attempt++) {
 
                     // C. Automatic Failover to OpenRouter (sk-or- keys) with 15s timeout so ISP blocks never hang
                     if (openRouterKeys.length > 0) {
-                        const orModels = ['openrouter/free', 'google/gemini-3.5-flash-lite', 'openai/gpt-4o-mini'];
+                        const orModels = ['openrouter/free', 'google/gemini-2.0-flash', 'openai/gpt-4o-mini'];
                         for (let kOffset = 0; kOffset < openRouterKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % openRouterKeys.length;
                             const activeKey = openRouterKeys[keyIdx];
@@ -3154,37 +3154,44 @@ How many of the pairs given above are correctly matched?
 
 Return ONLY valid JSON array: [{"qNo": 11, "text": "...", "options": ["optA", "optB", "optC", "optD"]}]`;
 
-            const apiKey = apiKeys[keyIdx % apiKeys.length];
-            keyIdx++;
+            const modelsToTry = ['gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite'];
+            let repaired = false;
 
-            const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    contents: [{
-                        parts: [
-                            { text: prompt },
-                            { inline_data: { mime_type: 'image/jpeg', data: base64Img } }
-                        ]
-                    }],
-                    generationConfig: { temperature: 0.1, response_mime_type: 'application/json' }
-                })
-            });
+            for (const modelName of modelsToTry) {
+                if (repaired) break;
+                const apiKey = apiKeys[keyIdx % apiKeys.length];
+                keyIdx++;
 
-            if (resp.ok) {
-                const data = await resp.json();
-                const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
-                const fixedList = JSON.parse(rawJson);
-                if (Array.isArray(fixedList)) {
-                    fixedList.forEach(fixed => {
-                        const target = questions.find(q => q.qNo === Number(fixed.qNo));
-                        if (target && fixed.text) {
-                            target.text = fixed.text.trim();
-                            if (Array.isArray(fixed.options) && fixed.options.length >= 2) {
-                                target.options = fixed.options.slice(0, 4).map(o => o.replace(/^\(?[a-dA-D][\)\.]\s*/, '').trim());
+                const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{
+                            parts: [
+                                { text: prompt },
+                                { inline_data: { mime_type: 'image/jpeg', data: base64Img } }
+                            ]
+                        }],
+                        generationConfig: { temperature: 0.1, response_mime_type: 'application/json' }
+                    })
+                });
+
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const rawJson = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
+                    const fixedList = JSON.parse(rawJson);
+                    if (Array.isArray(fixedList)) {
+                        fixedList.forEach(fixed => {
+                            const target = questions.find(q => q.qNo === Number(fixed.qNo));
+                            if (target && fixed.text) {
+                                target.text = fixed.text.trim();
+                                if (Array.isArray(fixed.options) && fixed.options.length >= 2) {
+                                    target.options = fixed.options.slice(0, 4).map(o => o.replace(/^\(?[a-dA-D][\)\.]\s*/, '').trim());
+                                }
                             }
-                        }
-                    });
+                        });
+                        repaired = true;
+                    }
                 }
             }
         } catch (err) {
