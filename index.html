@@ -676,28 +676,36 @@
               <button onclick="document.getElementById('cbt-creator-modal').classList.add('hidden')" class="text-xs text-slate-400 hover:text-white">✕ Close</button>
           </div>
 
-          <!-- Row 1: Exam -> Coaching -> Test Series -> Test Number -->
-          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              <div>
-                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Exam *</label>
-                  <select id="cbt-param-exam" onchange="onCbtExamChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
-                      <option value="GS">GS (General Studies)</option>
-                      <option value="CSAT">CSAT (Paper II)</option>
-                  </select>
-              </div>
-              <div>
-                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Coaching Name *</label>
-                  <select id="cbt-param-coaching" onchange="onCbtCoachingChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
-              </div>
-              <div>
-                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Test Series Name *</label>
-                  <select id="cbt-param-series" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
-              </div>
-              <div>
-                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Test Number *</label>
-                  <input id="cbt-param-testno" type="number" min="1" value="1" placeholder="e.g. 1, 2, 3..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
-              </div>
-          </div>
+          <!-- Row 1: Exam -> Coaching -> Test Series -> Type -> Test Number / Subject -->
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Exam *</label>
+                    <select id="cbt-param-exam" onchange="onCbtExamChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+                        <option value="GS">GS (General Studies)</option>
+                        <option value="CSAT">CSAT (Paper II)</option>
+                    </select>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Coaching Name *</label>
+                    <select id="cbt-param-coaching" onchange="onCbtCoachingChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Test Series Name *</label>
+                    <select id="cbt-param-series" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
+                </div>
+                <div>
+                    <label class="block text-[11px] font-semibold text-slate-400 mb-1">Type *</label>
+                    <select id="cbt-param-type" onchange="onCbtTypeChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+                        <option value="Sectional">Sectional</option>
+                        <option value="FLT">FLT</option>
+                    </select>
+                </div>
+                <div>
+                    <label id="cbt-testno-sub-label" class="block text-[11px] font-semibold text-slate-400 mb-1">Test Number / Subject *</label>
+                    <input id="cbt-param-testno" type="number" min="1" value="1" placeholder="e.g. 1, 2, 3..." class="hidden w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+                    <select id="cbt-param-subject" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
+                </div>
+            </div>
 
           <!-- Row 2: Box 1 (Question Paper) + Box 2 (Explanation Key PDF/Text) -->
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-5 pt-2">
@@ -2637,6 +2645,43 @@ function initCbtHierarchyDropdowns() {
     onCbtExamChange();
 }
 
+const CBT_SECTIONAL_SUBJECTS = {
+    GS: [
+        'Polity',
+        'Economics',
+        'Geography',
+        'Modern History',
+        'Environment',
+        'Arts & Culture',
+        'Science & Tech',
+        'Ancient & Medieval',
+        'Miscellaneous'
+    ],
+    CSAT: [
+        'RC',
+        'Aptitude',
+        'LR'
+    ]
+};
+const CBT_SECTIONAL_SUBJECTS = {
+    GS: [
+        'Polity',
+        'Economics',
+        'Geography',
+        'Modern History',
+        'Environment',
+        'Arts & Culture',
+        'Science & Tech',
+        'Ancient & Medieval',
+        'Miscellaneous'
+    ],
+    CSAT: [
+        'RC',
+        'Aptitude',
+        'LR'
+    ]
+};
+
 function onCbtExamChange() {
     const exam = document.getElementById('cbt-param-exam').value;
     const coachingEl = document.getElementById('cbt-param-coaching');
@@ -2650,6 +2695,7 @@ function onCbtExamChange() {
             : 'GS (100 Qs): +2.0 / -0.66';
     }
     onCbtCoachingChange();
+    onCbtTypeChange();
 }
 
 function onCbtCoachingChange() {
@@ -2658,6 +2704,40 @@ function onCbtCoachingChange() {
     const seriesEl = document.getElementById('cbt-param-series');
     const seriesList = (CBT_HIERARCHY[exam] && CBT_HIERARCHY[exam][coaching]) || [];
     seriesEl.innerHTML = seriesList.map(s => `<option value="${s}">${s}</option>`).join('');
+}
+
+function onCbtTypeChange() {
+    const exam = document.getElementById('cbt-param-exam').value;
+    const type = document.getElementById('cbt-param-type').value;
+    const testNoInput = document.getElementById('cbt-param-testno');
+    const subjectSelect = document.getElementById('cbt-param-subject');
+
+    if (type === 'FLT') {
+        testNoInput.classList.remove('hidden');
+        subjectSelect.classList.add('hidden');
+    } else {
+        testNoInput.classList.add('hidden');
+        subjectSelect.classList.remove('hidden');
+        const subjects = CBT_SECTIONAL_SUBJECTS[exam] || [];
+        subjectSelect.innerHTML = subjects.map(sub => `<option value="${sub}">${sub}</option>`).join('');
+    }
+}
+
+function onCbtTypeChange() {
+    const exam = document.getElementById('cbt-param-exam').value;
+    const type = document.getElementById('cbt-param-type').value;
+    const testNoInput = document.getElementById('cbt-param-testno');
+    const subjectSelect = document.getElementById('cbt-param-subject');
+
+    if (type === 'FLT') {
+        testNoInput.classList.remove('hidden');
+        subjectSelect.classList.add('hidden');
+    } else {
+        testNoInput.classList.add('hidden');
+        subjectSelect.classList.remove('hidden');
+        const subjects = CBT_SECTIONAL_SUBJECTS[exam] || [];
+        subjectSelect.innerHTML = subjects.map(sub => `<option value="${sub}">${sub}</option>`).join('');
+    }
 }
 
 function handleCbtFileChange(type, input) {
@@ -2791,7 +2871,10 @@ async function processAndSaveCbtTest() {
     const exam = document.getElementById('cbt-param-exam').value;
     const coaching = document.getElementById('cbt-param-coaching').value;
     const series = document.getElementById('cbt-param-series').value;
-    const testNo = parseInt(document.getElementById('cbt-param-testno').value) || 1;
+    const testType = document.getElementById('cbt-param-type').value;
+    const testNoOrSubject = testType === 'FLT'
+        ? `Test ${parseInt(document.getElementById('cbt-param-testno').value) || 1}`
+        : document.getElementById('cbt-param-subject').value;
     let qRaw = document.getElementById('cbt-new-raw').value.trim();
     let expRaw = document.getElementById('cbt-exp-raw').value.trim();
     const statusEl = document.getElementById('cbt-import-status');
@@ -2845,13 +2928,14 @@ async function processAndSaveCbtTest() {
             ? Math.max(10, Math.round(questions.length * 1.5))
             : Math.max(10, Math.round(questions.length * 1.2));
 
-        const title = `${coaching} ${series} - Test ${testNo}`;
+        const title = `${coaching} ${series} (${testType}) - ${testNoOrSubject}`;
         cbtTestsDb.unshift({
             id: 'mock_' + Date.now(),
             exam,
             coaching,
             series,
-            testNo,
+            testType,
+            testNoOrSubject,
             title,
             durationMins,
             marking,
