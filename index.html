@@ -2742,27 +2742,49 @@ async function extractDigitalTextFromPdf(file, statusLabel) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
+
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
         if (statusLabel && pageNum % 5 === 0) {
             statusLabel.textContent = `Reading PDF page ${pageNum} of ${pdf.numPages}...`;
         }
         const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 1.0 });
+        const midX = viewport.width * 0.48;
         const content = await page.getTextContent();
-        let lastY = null;
-        let pageLines = [];
-        let currentLine = '';
-        for (const item of content.items) {
-            const y = item.transform ? item.transform[5] : null;
-            if (lastY !== null && y !== null && Math.abs(y - lastY) > 4) {
-                pageLines.push(currentLine.trim());
-                currentLine = item.str;
-            } else {
-                currentLine += (currentLine && !currentLine.endsWith(' ') ? ' ' : '') + item.str;
+
+        // Detect if page uses 2-column coaching layout
+        const items = content.items.filter(it => it.str && it.str.trim());
+        const leftItems = items.filter(it => it.transform && it.transform[4] < midX);
+        const rightItems = items.filter(it => it.transform && it.transform[4] >= midX);
+        const isTwoColumn = leftItems.length > 15 && rightItems.length > 15;
+
+        const buildColumnLines = (colItems) => {
+            colItems.sort((a, b) => {
+                const dy = b.transform[5] - a.transform[5];
+                return Math.abs(dy) > 4 ? dy : a.transform[4] - b.transform[4];
+            });
+            let lastY = null;
+            let lines = [];
+            let cur = '';
+            for (const it of colItems) {
+                const y = it.transform[5];
+                if (lastY !== null && Math.abs(y - lastY) > 4) {
+                    if (cur.trim()) lines.push(cur.trim());
+                    cur = it.str;
+                } else {
+                    cur += (cur && !cur.endsWith(' ') ? ' ' : '') + it.str;
+                }
+                lastY = y;
             }
-            lastY = y;
+            if (cur.trim()) lines.push(cur.trim());
+            return lines.join('\n');
+        };
+
+        if (isTwoColumn) {
+            fullText += buildColumnLines(leftItems) + '\n' + buildColumnLines(rightItems) + '\n';
+        } else {
+            fullText += buildColumnLines(items) + '\n';
         }
-        if (currentLine.trim()) pageLines.push(currentLine.trim());
-        fullText += pageLines.join('\n') + '\n';
     }
     return fullText;
 }
@@ -2804,16 +2826,15 @@ function parseCbtExplanationData(rawExp) {
 }
 
 function parseCbtQuestionsBlock(rawText, expMap) {
-    // Normalize inline options like "(a) ... (b) ... (c) ... (d) ..." or "a) ... b) ..." onto separate lines
     const normalized = rawText
         .replace(/\r/g, '')
         .replace(/(?:^|\s+)\(?([a-dA-D])[\)\.]\s+/g, '\n($1) ');
 
     const lines = normalized.split('\n');
     const rawBlocks = [];
-    let expectedQNo = 1;
     let currentBlock = null;
     let currentOptCount = 0;
+    let lastQNo = 0;
 
     for (const rawLine of lines) {
         const line = rawLine.trim();
@@ -2823,18 +2844,18 @@ function parseCbtQuestionsBlock(rawText, expMap) {
         const qStart = line.match(/^(?:Q\.?\s*)?(\d+)[\.\)]\s+(.*)/i);
         const qNum = qStart ? parseInt(qStart[1]) : null;
 
-        // Start a new question when:
-        // 1) It's Q1, OR
-        // 2) It's the next sequential QNo AND previous question has options, OR
-        // 3) Previous question already collected 4 options and we see the next QNo (or QNo+1)
-        const isNextSequential = qNum !== null && qNum === expectedQNo && (expectedQNo === 1 || currentOptCount >= 1);
-        const isAfterFullOptions = qNum !== null && qNum >= expectedQNo && qNum <= expectedQNo + 2 && currentOptCount >= 4;
+        // Accept next increasing question number (qNum > lastQNo && qNum <= lastQNo + 5)
+        // ONLY after previous question has collected at least 2 options (so inner statements 1., 2., 3. never split!)
+        const canStartNewQ = qNum !== null
+            && qNum > lastQNo
+            && qNum <= lastQNo + 5
+            && (lastQNo === 0 || currentOptCount >= 2);
 
-        if (isNextSequential || isAfterFullOptions) {
+        if (canStartNewQ) {
             if (currentBlock) rawBlocks.push(currentBlock);
             currentBlock = { qNo: qNum, lines: [qStart[2]] };
             currentOptCount = 0;
-            expectedQNo = qNum + 1;
+            lastQNo = qNum;
         } else if (currentBlock) {
             currentBlock.lines.push(line);
             if (isOptionLine) currentOptCount++;
