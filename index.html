@@ -1449,7 +1449,45 @@
                     }
                 });
             }
-Right above const statusBtn = document.getElementById('btn-process-import');, paste this smart PDF optimizer block (it detects any attached inline_data PDF inside parts, extracts text locally first, or falls back to lightweight compressed page JPEGs if it's a scanned image PDF):
+            // Auto-optimize large PDF payloads locally via pdf.js (text extraction or lightweight page JPEGs)
+            const pdfPartIndex = parts.findIndex(p => (p.inlineData?.mimeType || p.inline_data?.mime_type) === 'application/pdf');
+            if (pdfPartIndex !== -1 && window.pdfjsLib) {
+                const statusEl = document.getElementById('btn-process-import');
+                if (statusEl) statusEl.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Optimizing PDF locally...`;
+                try {
+                    const b64 = parts[pdfPartIndex].inlineData?.data || parts[pdfPartIndex].inline_data?.data;
+                    const binary = atob(b64);
+                    const bytes = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+
+                    const pdfDoc = await pdfjsLib.getDocument({ data: bytes }).promise;
+                    let extractedText = '';
+                    for (let p = 1; p <= pdfDoc.numPages; p++) {
+                        const page = await pdfDoc.getPage(p);
+                        const content = await page.getTextContent();
+                        extractedText += `\n--- PAGE ${p} ---\n` + content.items.map(it => it.str).join(' ');
+                    }
+
+                    if (extractedText.replace(/\s+/g, '').length > 300) {
+                        parts.splice(pdfPartIndex, 1, { text: `EXTRACTED PDF TEXT:\n${extractedText}` });
+                    } else {
+                        const imageParts = [];
+                        for (let p = 1; p <= pdfDoc.numPages; p++) {
+                            const page = await pdfDoc.getPage(p);
+                            const viewport = page.getViewport({ scale: 1.35 });
+                            const canvas = document.createElement('canvas');
+                            canvas.width = viewport.width;
+                            canvas.height = viewport.height;
+                            await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+                            const jpegB64 = canvas.toDataURL('image/jpeg', 0.72).split(',')[1];
+                            imageParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
+                        }
+                        parts.splice(pdfPartIndex, 1, ...imageParts);
+                    }
+                } catch (pdfErr) {
+                    console.warn('Local PDF optimization skipped:', pdfErr);
+                }
+            }
          const statusBtn = document.getElementById('btn-process-import');
             const modelPool = [
                 'models/gemini-3.5-flash-lite',
