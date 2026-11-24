@@ -1683,20 +1683,21 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     const currentBatchIdx = rrCounter++;
                     let lastError = "All configured AI keys/models are busy.";
 
-                    // A. Try Gemini Keys First (AIza... -> Google AI Studio | AQ.... -> Vertex Express)
+                    // A. Try Gemini Keys First (Supports both AIza... and AQ.... keys natively)
                     if (geminiKeys.length > 0) {
-                        const geminiModels = [
-                            'gemini-3.5-flash-lite',
-                            'gemini-3.8-flash',
-                            'gemini-3.1-flash-lite'
-                        ];
                         for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
                             const activeKey = geminiKeys[keyIdx];
-                            for (const rawModel of geminiModels) {
-    const cleanModel = rawModel.replace(/^models\//, '');
-    currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
-    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
+                            const isAQ = activeKey.startsWith('AQ.');
+                            const modelsToTry = isAQ
+                                ? ['gemini-2.5-flash', 'gemini-2.5-flash-lite']
+                                : ['gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-2.5-flash'];
+
+                            for (const cleanModel of modelsToTry) {
+                                currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
+                                const endpoint = isAQ
+                                    ? `https://aiplatform.googleapis.com/v1/publishers/google/models/${cleanModel}:generateContent?key=${activeKey}`
+                                    : `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
 
                                 try {
                                     const res = await fetchWithTimeout(endpoint, {
@@ -1706,7 +1707,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             contents: [{ role: 'user', parts: batchParts }],
                                             generationConfig: { maxOutputTokens: 65536, temperature: 0.0 }
                                         })
-                                    }, 20000);
+                                    }, 25000);
                                     const data = await res.json();
                                     if (!res.ok || data.error) {
                                         lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${data.error?.message || `HTTP ${res.status}`}`;
@@ -1717,7 +1718,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                     if (parsed) return parsed;
                                     lastError = `Gemini #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
                                 } catch (err) {
-                                    lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (20s)' : err.message}`;
+                                    lastError = `Gemini #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (25s)' : err.message}`;
                                 }
                             }
                         }
