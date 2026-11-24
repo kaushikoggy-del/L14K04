@@ -1930,58 +1930,74 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     }
                 };
 
-                // 3. Multi-Key + Multi-Provider Router (Gemini AIza & AQ. Vertex Express -> Groq -> OpenRouter)
+                // 3. Sticky Single-Key + Multi-Provider Router (Locks 1 Gemini key until exhausted -> Groq -> OpenRouter)
+                let activeGeminiKeyIdx = 0;
+
                 async function runBatchExtraction(batchParts, label) {
-                    const currentBatchIdx = rrCounter++;
                     let lastError = "All configured AI keys/models are busy.";
 
-                   // A. Try Gemini Keys First (Works for both AIza... and AQ.... keys)
+                    // A. Sticky Single-Key Gemini Router (Uses only 1 key until its quota is exhausted)
                     let geminiError = "";
                     if (geminiKeys.length > 0) {
                         const modelsToTry = ['gemini-3.5-flash-lite', 'gemini-3.8-flash'];
-                        for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
-                            const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
+                        if (activeGeminiKeyIdx >= geminiKeys.length) activeGeminiKeyIdx = 0;
+
+                        for (let tried = 0; tried < geminiKeys.length; tried++) {
+                            const keyIdx = activeGeminiKeyIdx;
                             const activeKey = geminiKeys[keyIdx];
+                            let keyExhausted = false;
 
                             for (const cleanModel of modelsToTry) {
-                                currentStatusPrefix = `${label} • Gemini #${keyIdx + 1}/${geminiKeys.length} (${cleanModel})`;
+                                currentStatusPrefix = `${label} • Gemini Key #${keyIdx + 1}/${geminiKeys.length} [Locked] (${cleanModel})`;
                                 const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
 
                                 try {
                                     let res, data;
-for (let attempt = 0; attempt < 3; attempt++) {
-    res = await fetchWithTimeout(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ role: 'user', parts: batchParts }],
-            generationConfig: { maxOutputTokens: 16384, temperature: 0.0 }
-        })
-    }, 25000);
-    data = await res.json().catch(() => ({}));
-    // 500/502/503/504 = Google server busy -> wait and retry same model
-    if (![500, 502, 503, 504].includes(res.status)) break;
-    currentStatusPrefix = `${label} • Gemini busy, retrying (${attempt + 1}/3)`;
-    await new Promise(r => setTimeout(r, 2500 * (attempt + 1)));
-}
+                                    for (let attempt = 0; attempt < 3; attempt++) {
+                                        res = await fetchWithTimeout(endpoint, {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({
+                                                contents: [{ role: 'user', parts: batchParts }],
+                                                generationConfig: { maxOutputTokens: 16384, temperature: 0.0 }
+                                            })
+                                        }, 25000);
+                                        data = await res.json().catch(() => ({}));
+                                        if (![500, 502, 503, 504].includes(res.status)) break;
+                                        currentStatusPrefix = `${label} • Server busy, retrying Key #${keyIdx + 1} (${attempt + 1}/3)`;
+                                        await new Promise(r => setTimeout(r, 3000 * (attempt + 1)));
+                                    }
+
                                     if (!res.ok || data.error) {
-                                        geminiError = `Gemini #${keyIdx + 1} (${cleanModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        const errMsg = data.error?.message || `HTTP ${res.status}`;
+                                        geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): ${errMsg}`;
                                         lastError = geminiError;
-                                        if ([400, 401, 403, 429].includes(res.status)) break;
+
+                                        // Exhausted or invalid key -> permanently switch lock to next key
+                                        if ([400, 401, 403, 429].includes(res.status) || /quota|exceeded|limit|invalid|expired/i.test(errMsg)) {
+                                            keyExhausted = true;
+                                            break;
+                                        }
                                         continue;
                                     }
+
                                     const parsed = extractJsonArray(data.candidates?.[0]?.content?.parts?.[0]?.text);
                                     if (parsed) return parsed;
-                                    geminiError = `Gemini #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
+                                    geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
                                     lastError = geminiError;
                                 } catch (err) {
-                                    geminiError = `Gemini #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (25s)' : err.message}`;
+                                    geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (25s)' : err.message}`;
                                     lastError = geminiError;
                                 }
                             }
+
+                            if (keyExhausted) {
+                                activeGeminiKeyIdx = (activeGeminiKeyIdx + 1) % geminiKeys.length;
+                            } else {
+                                break; // Don't burn other keys on temporary 503/timeout
+                            }
                         }
                     }
-
                     // B. Automatic Failover to Groq (gsk_ keys) when Gemini is busy
                     if (groqKeys.length > 0) {
                         for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
