@@ -1403,7 +1403,7 @@
             return map;
         }
 
-        async function callGeminiAI(apiKey, exam, year, rawText, answerKey, fileObj) {async function callGeminiAI(apiKey, exam, year, rawText, answerKey, fileObj) {
+       async function callGeminiAI(apiKey, exam, year, rawText, answerKey, fileObj) {
             const statusBtn = document.getElementById('btn-process-import');
             let etaInterval = null;
             let etaEndTime = 0;
@@ -1429,7 +1429,22 @@
             };
 
             try {
-                // 1. Parse Official Answer Key into a strict lookup map { 1: 'D', 2: 'C', ... }
+                // 1. Parse up to 10+ API keys (comma, semicolon, space, or newline separated) and auto-classify provider
+                const rawKeys = String(apiKey || '')
+                    .split(/[\s,;]+/)
+                    .map(k => k.trim())
+                    .filter(k => k.length > 10);
+
+                if (rawKeys.length === 0) {
+                    throw new Error("No valid API key found. Open Settings (⋮) and paste 1 to 10 API keys separated by commas.");
+                }
+
+                const geminiKeys = rawKeys.filter(k => k.startsWith('AIza'));
+                const openRouterKeys = rawKeys.filter(k => k.startsWith('sk-or-'));
+                const groqKeys = rawKeys.filter(k => k.startsWith('gsk_'));
+                let rrCounter = 0;
+
+                // 2. Parse Official Answer Key into a strict deterministic lookup map { 1: 'D', 2: 'C', ... }
                 const keyMap = {};
                 if (answerKey) {
                     const matches = answerKey.matchAll(/(\d+)\s*[-:.)]\s*([A-Da-d])/g);
@@ -1438,77 +1453,176 @@
                     }
                 }
 
-                // 2. Helper to call Gemini with automatic failover across free models
-                async function runBatchExtraction(batchParts, label) {
-                    const modelPool = [
-                        'models/gemini-3.5-flash-lite',
-                        'models/gemini-3.1-flash-lite',
-                        'models/gemini-2.5-flash',
-                        'models/gemini-2.0-flash'
-                    ];
-                    let lastError = "All free Gemini models are currently busy.";
-                    for (const modelName of modelPool) {
-                        const shortName = modelName.replace('models/', '');
-                        currentStatusPrefix = `${label} (${shortName})`;
-                        try {
-                            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${apiKey}`, {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({
-                                    contents: [{ parts: batchParts }],
-                                    generationConfig: {
-                                        maxOutputTokens: 65536,
-                                        temperature: 0.0
-                                    }
-                                })
+                // Helper: Parse JSON array safely even if wrapped in markdown fences
+                const extractJsonArray = (rawStr) => {
+                    if (!rawStr) return null;
+                    const cleaned = rawStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+                    const match = cleaned.match(/\[\s*\{[\s\S]*\}\s*\]/);
+                    if (!match) return null;
+                    try {
+                        const parsed = JSON.parse(match[0]);
+                        return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+                    } catch (_) {
+                        return null;
+                    }
+                };
+
+                // Helper: Convert Gemini-style parts [{text}, {inlineData}] to OpenAI/OpenRouter/Groq message content
+                const toOpenAIMessages = (parts) => {
+                    const content = [];
+                    for (const p of parts) {
+                        if (p.text) {
+                            content.push({ type: 'text', text: p.text });
+                        } else if (p.inlineData) {
+                            content.push({
+                                type: 'image_url',
+                                image_url: { url: `data:${p.inlineData.mimeType};base64,${p.inlineData.data}` }
                             });
-                            const data = await res.json();
-                            if (!res.ok || data.error) {
-                                lastError = `${shortName}: ${data.error?.message || `HTTP ${res.status}`}`;
-                                continue;
-                            }
-                            const responseText = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-                            const jsonMatch = responseText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-                            if (jsonMatch) {
-                                return JSON.parse(jsonMatch[0]);
-                            }
-                            lastError = `${shortName}: Returned non-JSON output.`;
-                        } catch (err) {
-                            lastError = `${shortName}: ${err.message}`;
                         }
                     }
+                    return [{ role: 'user', content }];
+                };
+
+                // 3. Multi-Key + Multi-Provider Router (Gemini Pool -> Groq Pool -> OpenRouter Pool)
+                async function runBatchExtraction(batchParts, label) {
+                    const currentBatchIdx = rrCounter++;
+                    let lastError = "All configured AI keys/models are busy.";
+
+                    // A. Try Gemini Keys (rotated across all provided AIza keys)
+                    if (geminiKeys.length > 0) {
+                        const geminiModels = [
+                            'models/gemini-3.5-flash-lite',
+                            'models/gemini-3.1-flash-lite',
+                            'models/gemini-2.5-flash',
+                            'models/gemini-2.0-flash'
+                        ];
+                        for (let kOffset = 0; kOffset < geminiKeys.length; kOffset++) {
+                            const keyIdx = (currentBatchIdx + kOffset) % geminiKeys.length;
+                            const activeKey = geminiKeys[keyIdx];
+                            for (const modelName of geminiModels) {
+                                const shortName = modelName.replace('models/', '');
+                                currentStatusPrefix = `${label} • Gemini Key #${keyIdx + 1}/${geminiKeys.length} (${shortName})`;
+                                try {
+                                    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/${modelName}:generateContent?key=${activeKey}`, {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                            contents: [{ parts: batchParts }],
+                                            generationConfig: { maxOutputTokens: 32768, temperature: 0.0 }
+                                        })
+                                    });
+                                    const data = await res.json();
+                                    if (!res.ok || data.error) {
+                                        lastError = `Gemini Key #${keyIdx + 1} (${shortName}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        if (res.status === 429 || res.status === 400 || res.status === 403) break;
+                                        continue;
+                                    }
+                                    const parsed = extractJsonArray(data.candidates?.[0]?.content?.parts?.[0]?.text);
+                                    if (parsed) return parsed;
+                                    lastError = `Gemini Key #${keyIdx + 1} (${shortName}): Non-JSON output`;
+                                } catch (err) {
+                                    lastError = `Gemini Key #${keyIdx + 1}: ${err.message}`;
+                                }
+                            }
+                        }
+                    }
+
+                    // B. Automatic Failover to Groq (gsk_ keys)
+                    if (groqKeys.length > 0) {
+                        const hasImages = batchParts.some(p => p.inlineData);
+                        const groqModels = hasImages
+                            ? ['meta-llama/llama-4-scout-17b-16e-instruct']
+                            : ['llama-3.3-70b-versatile', 'meta-llama/llama-4-scout-17b-16e-instruct'];
+                        for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
+                            const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
+                            const activeKey = groqKeys[keyIdx];
+                            for (const gModel of groqModels) {
+                                currentStatusPrefix = `${label} • Groq Key #${keyIdx + 1} (${gModel.split('/').pop()})`;
+                                try {
+                                    const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${activeKey}`
+                                        },
+                                        body: JSON.stringify({
+                                            model: gModel,
+                                            messages: toOpenAIMessages(batchParts),
+                                            temperature: 0.0,
+                                            max_tokens: 16384
+                                        })
+                                    });
+                                    const data = await res.json();
+                                    if (!res.ok || data.error) {
+                                        lastError = `Groq Key #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
+                                        continue;
+                                    }
+                                    const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
+                                    if (parsed) return parsed;
+                                } catch (err) {
+                                    lastError = `Groq Key #${keyIdx + 1}: ${err.message}`;
+                                }
+                            }
+                        }
+                    }
+
+                    // C. Automatic Failover to OpenRouter (sk-or- keys)
+                    if (openRouterKeys.length > 0) {
+                        const orModels = [
+                            'openrouter/free',
+                            'google/gemini-2.5-flash',
+                            'openai/gpt-4o-mini',
+                            'anthropic/claude-3.5-haiku'
+                        ];
+                        for (let kOffset = 0; kOffset < openRouterKeys.length; kOffset++) {
+                            const keyIdx = (currentBatchIdx + kOffset) % openRouterKeys.length;
+                            const activeKey = openRouterKeys[keyIdx];
+                            for (const orModel of orModels) {
+                                currentStatusPrefix = `${label} • OpenRouter #${keyIdx + 1} (${orModel.split('/').pop()})`;
+                                try {
+                                    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${activeKey}`,
+                                            'HTTP-Referer': window.location.origin,
+                                            'X-Title': 'UPSC PYQ Analytics'
+                                        },
+                                        body: JSON.stringify({
+                                            model: orModel,
+                                            messages: toOpenAIMessages(batchParts),
+                                            temperature: 0.0
+                                        })
+                                    });
+                                    const data = await res.json();
+                                    if (!res.ok || data.error) {
+                                        lastError = `OpenRouter #${keyIdx + 1} (${orModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        continue;
+                                    }
+                                    const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
+                                    if (parsed) return parsed;
+                                } catch (err) {
+                                    lastError = `OpenRouter #${keyIdx + 1}: ${err.message}`;
+                                }
+                            }
+                        }
+                    }
+
                     throw new Error(lastError);
                 }
 
-                const buildPrompt = (extraContent = '') => `You are a strict, verbatim UPSC Exam OCR & Question Extractor.
-Target Exam: ${exam} | Year: ${year}
-Available Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
-
-CRITICAL RULES:
-1. Extract EVERY question present in this batch strictly VERBATIM (word-for-word, preserving every statement, list, table, and option exactly as printed). Do NOT summarize, skip, or paraphrase.
-2. Include the exact printed question number in "qNum" (integer).
-3. Keep "eliminationLogic" and "peripheralKnowledge" as "Pending deep AI enrichment."
-
-Return ONLY a valid JSON array:
-[
-  {
-    "qNum": 1,
-    "subject": "<Exact match from Available Subjects>",
-    "theme": "<Accurate Micro-theme topic name>",
-    "question": "<100% verbatim question text including all numbered statements>",
-    "options": ["<Verbatim Option A>", "<Verbatim Option B>", "<Verbatim Option C>", "<Verbatim Option D>"],
-    "officialKey": "<A/B/C/D>",
-    "eliminationLogic": "Pending deep AI enrichment.",
-    "peripheralKnowledge": "Pending deep AI enrichment."
-  }
-]
+                // Compact verbatim prompt
+                const buildPrompt = (extraContent = '') => `Extract ALL UPSC MCQs verbatim as a JSON array.
+Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
+Format: [{"qNum":1,"subject":"...","theme":"...","question":"exact full text","options":["A text","B text","C text","D text"],"officialKey":"A"}]
+Rules: Verbatim text & all statements. Include exact printed qNum. Return ONLY valid JSON.
 ${extraContent}`;
 
                 let allParsed = [];
 
-                // 3. Handle PDF via pdf.js with automatic page-batching & self-calibrating ETA
+                // 4. Micro-batched PDF processing (2 lightweight grayscale pages per call = ~70KB payload, distributed across all keys)
                 if (fileObj && (fileObj.type === 'application/pdf' || fileObj.name.toLowerCase().endsWith('.pdf')) && window.pdfjsLib) {
-                    if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Calculating PDF workload & ETA...`;
+                    if (statusBtn) statusBtn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Preparing lightweight batches (${rawKeys.length} key${rawKeys.length > 1 ? 's' : ''} active)...`;
                     const arrayBuffer = await fileObj.arrayBuffer();
                     const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
@@ -1523,9 +1637,9 @@ ${extraContent}`;
                     }
 
                     const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
-                    const pagesPerBatch = 4;
+                    const pagesPerBatch = isDigitalText ? 5 : 2;
                     const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
-                    let avgBatchSec = isDigitalText ? 8 : 15;
+                    let avgBatchSec = isDigitalText ? 5 : 7;
 
                     startEtaTimer(totalBatches * avgBatchSec);
                     let completedBatchTimes = [];
@@ -1534,23 +1648,25 @@ ${extraContent}`;
                         const batchStart = Date.now();
                         const startPage = b * pagesPerBatch + 1;
                         const endPage = Math.min((b + 1) * pagesPerBatch, pdfDoc.numPages);
-                        const batchLabel = `Batch ${b + 1}/${totalBatches} (Pages ${startPage}-${endPage})`;
+                        const batchLabel = `Batch ${b + 1}/${totalBatches} (P.${startPage}-${endPage})`;
 
                         if (isDigitalText) {
                             const chunkText = pageTexts.slice(startPage - 1, endPage).join('\n\n');
-                            const resItems = await runBatchExtraction([{ text: buildPrompt(`PDF TEXT:\n${chunkText}`) }], batchLabel);
+                            const resItems = await runBatchExtraction([{ text: buildPrompt(chunkText) }], batchLabel);
                             allParsed.push(...resItems);
                         } else {
-                            currentStatusPrefix = `Rendering ${batchLabel}`;
+                            currentStatusPrefix = `Compressing ${batchLabel}`;
                             const imgParts = [{ text: buildPrompt() }];
                             for (let p = startPage; p <= endPage; p++) {
                                 const page = await pdfDoc.getPage(p);
-                                const viewport = page.getViewport({ scale: 1.5 });
+                                const viewport = page.getViewport({ scale: 1.15 });
                                 const canvas = document.createElement('canvas');
                                 canvas.width = viewport.width;
                                 canvas.height = viewport.height;
-                                await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
-                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.78).split(',')[1];
+                                const ctx = canvas.getContext('2d');
+                                ctx.filter = 'grayscale(100%) contrast(125%)';
+                                await page.render({ canvasContext: ctx, viewport }).promise;
+                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.58).split(',')[1];
                                 imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
                             }
                             const resItems = await runBatchExtraction(imgParts, batchLabel);
@@ -1566,9 +1682,9 @@ ${extraContent}`;
                         }
                     }
                 } else {
-                    const estSec = rawText ? Math.max(8, Math.ceil(rawText.length / 2500) * 4) : 14;
+                    const estSec = rawText ? Math.max(5, Math.ceil(rawText.length / 3000) * 3) : 9;
                     startEtaTimer(estSec);
-                    const parts = [{ text: buildPrompt(rawText ? `Raw Content:\n${rawText}` : '') }];
+                    const parts = [{ text: buildPrompt(rawText || '') }];
                     if (fileObj) {
                         const base64Data = await new Promise((resolve, reject) => {
                             const reader = new FileReader();
@@ -1581,7 +1697,7 @@ ${extraContent}`;
                     allParsed = await runBatchExtraction(parts, 'Extracting Questions');
                 }
 
-                // 4. Deduplicate by question number & FORCE-LOCK official answer keys deterministically in JS
+                // 5. Deduplicate by question number & FORCE-LOCK official answer keys deterministically in JS
                 const seen = new Set();
                 const finalized = [];
                 for (let idx = 0; idx < allParsed.length; idx++) {
