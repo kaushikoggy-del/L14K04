@@ -2812,19 +2812,24 @@ function parseCbtQuestionsBlock(rawText, expMap) {
     const rawBlocks = [];
     let expectedQNo = 1;
     let currentBlock = null;
+    let currentOptCount = 0;
 
     for (const rawLine of lines) {
         const line = rawLine.trim();
         if (!line || /^Page\s+\d+/i.test(line)) continue;
 
-        // Match ONLY when line starts with the exact next sequential Question Number (1, 2, 3...)
+        const isOptionLine = /^\(?[a-dA-D][\)\.]\s+/.test(line);
         const qStart = line.match(/^(?:Q\.?\s*)?(\d+)[\.\)]\s+(.*)/i);
-        if (qStart && parseInt(qStart[1]) === expectedQNo) {
+
+        // Naya question tabhi maano jab pichle question ke kam se kam 2 options aa chuke hon
+        if (qStart && parseInt(qStart[1]) === expectedQNo && (expectedQNo === 1 || currentOptCount >= 2)) {
             if (currentBlock) rawBlocks.push(currentBlock);
             currentBlock = { qNo: expectedQNo, lines: [qStart[2]] };
+            currentOptCount = 0;
             expectedQNo++;
         } else if (currentBlock) {
             currentBlock.lines.push(line);
+            if (isOptionLine) currentOptCount++;
         }
     }
     if (currentBlock) rawBlocks.push(currentBlock);
