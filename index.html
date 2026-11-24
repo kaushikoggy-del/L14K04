@@ -3247,35 +3247,30 @@ function renderCbtStage() {
 
     document.getElementById('cbt-q-num').textContent = idx + 1;
     const qTextEl = document.getElementById('cbt-q-text');
-    if (q.text.includes(' | ')) {
+    if (q.text.includes('[[TBL_ROW]]')) {
         const lines = q.text.split('\n');
         let htmlParts = [];
         let tableRows = [];
 
         const flushTable = () => {
             if (tableRows.length === 0) return;
-            // If only 1 single line had wide justified spacing, render it as normal text—not a table!
-            if (tableRows.length === 1) {
-                htmlParts.push(`<div class="mb-1.5">${tableRows[0].join(' ')}</div>`);
-                tableRows = [];
-                return;
-            }
             const maxCols = Math.max(...tableRows.map(r => r.length));
             const rowsHtml = tableRows.map((cells, rIdx) => {
                 while (cells.length < maxCols) cells.push('');
                 const tag = rIdx === 0 ? 'th' : 'td';
                 const cellClass = rIdx === 0
-                    ? 'border border-stone-500 bg-stone-300/70 px-3 py-1.5 font-bold text-left text-sm'
-                    : 'border border-stone-400 px-3 py-1.5 text-sm';
+                    ? 'border border-stone-600 bg-stone-300/80 px-3 py-2 font-bold text-left text-sm'
+                    : 'border border-stone-500 px-3 py-2 text-sm align-top';
                 return `<tr>${cells.map(c => `<${tag} class="${cellClass}">${c}</${tag}>`).join('')}</tr>`;
             }).join('');
-            htmlParts.push(`<table class="my-3 w-full max-w-2xl border-collapse border border-stone-500">${rowsHtml}</table>`);
+            htmlParts.push(`<table class="my-3 w-full max-w-2xl border-collapse border border-stone-600">${rowsHtml}</table>`);
             tableRows = [];
         };
 
         lines.forEach(line => {
-            if (line.includes(' | ')) {
-                tableRows.push(line.split(' | ').map(c => c.trim()));
+            if (line.startsWith('[[TBL_ROW]]')) {
+                const rawRow = line.replace('[[TBL_ROW]]', '').trim();
+                tableRows.push(rawRow.split(' || ').map(c => c.trim()));
             } else {
                 flushTable();
                 htmlParts.push(`<div class="mb-1.5">${line}</div>`);
