@@ -3312,6 +3312,41 @@ function switchFromViewToLiveTest() {
     launchCbtArena(cbtSession.testIdx, false);
 }
 
+function openCbtQuestionEditor() {
+    if (!cbtSession || !cbtSession.isViewOnly) return;
+    const q = cbtSession.test.questions[cbtSession.currentIndex];
+    document.getElementById('cbt-edit-qno').textContent = q.qNo;
+    document.getElementById('cbt-edit-text').value = q.text || '';
+    for (let i = 0; i < 4; i++) {
+        document.getElementById(`cbt-edit-opt-${i}`).value = q.options[i] || '';
+    }
+    document.getElementById('cbt-edit-modal').classList.remove('hidden');
+}
+
+function closeCbtQuestionEditor() {
+    document.getElementById('cbt-edit-modal').classList.add('hidden');
+}
+
+function saveCbtEditedQuestion() {
+    if (!cbtSession) return;
+    const q = cbtSession.test.questions[cbtSession.currentIndex];
+    const newText = document.getElementById('cbt-edit-text').value.trim();
+    if (!newText) { alert('Question text cannot be empty.'); return; }
+
+    q.text = newText;
+    const updatedOpts = [];
+    for (let i = 0; i < 4; i++) {
+        const val = document.getElementById(`cbt-edit-opt-${i}`).value.trim();
+        if (val) updatedOpts.push(val);
+    }
+    if (updatedOpts.length >= 2) q.options = updatedOpts;
+
+    localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
+    closeCbtQuestionEditor();
+    renderCbtStage();
+    renderCbtSidebar();
+}
+
 function startCbtTimer() {
     clearInterval(cbtTimerInterval);
     const updateDisplay = () => {
