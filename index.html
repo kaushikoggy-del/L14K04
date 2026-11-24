@@ -669,20 +669,64 @@
             </div>
         </div>
 
-        <!-- Quick Mock Test Importer (Paste Questions + Answer Key) -->
-        <div id="cbt-creator-modal" class="hidden bg-slate-900 border border-teal-800/50 rounded-2xl p-6 space-y-4">
-            <h3 class="text-sm font-bold text-teal-300 uppercase tracking-wider">Create Isolated Mock Test</h3>
-            <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <input id="cbt-new-title" type="text" placeholder="Test Title (e.g., Vision IAS MIH Test 2)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
-                <input id="cbt-new-duration" type="number" value="60" min="1" placeholder="Duration (Minutes)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
-                <input id="cbt-new-keys" type="text" placeholder="Answer Key (e.g., 1-B, 2-C, 3-A...)" class="bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
-            </div>
-            <textarea id="cbt-new-raw" rows="6" placeholder="Paste questions here in standard format:&#10;1. Question text here...&#10;(a) Option A&#10;(b) Option B&#10;(c) Option C&#10;(d) Option D" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 outline-none focus:border-teal-500"></textarea>
-            <div class="flex justify-end gap-2">
-                <button onclick="document.getElementById('cbt-creator-modal').classList.add('hidden')" class="px-4 py-2 rounded-lg bg-slate-800 text-xs text-slate-300">Cancel</button>
-                <button onclick="saveNewCbtTest()" class="px-5 py-2 rounded-lg bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white">Save Mock Test</button>
-            </div>
-        </div>
+        <!-- Structured Test Series Importer (Cascading Parameters + PDF/Image AI or Raw Text) -->
+      <div id="cbt-creator-modal" class="hidden bg-slate-900 border border-teal-800/50 rounded-2xl p-6 space-y-5">
+          <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 class="text-sm font-bold text-teal-300 uppercase tracking-wider">1. Test Series Metadata & Parameters</h3>
+              <button onclick="document.getElementById('cbt-creator-modal').classList.add('hidden')" class="text-xs text-slate-400 hover:text-white">✕ Close</button>
+          </div>
+
+          <!-- Row 1: Exam -> Coaching -> Test Series -> Test Number -->
+          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div>
+                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Exam *</label>
+                  <select id="cbt-param-exam" onchange="onCbtExamChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+                      <option value="GS">GS (General Studies)</option>
+                      <option value="CSAT">CSAT (Paper II)</option>
+                  </select>
+              </div>
+              <div>
+                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Coaching Name *</label>
+                  <select id="cbt-param-coaching" onchange="onCbtCoachingChange()" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
+              </div>
+              <div>
+                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Test Series Name *</label>
+                  <select id="cbt-param-series" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500"></select>
+              </div>
+              <div>
+                  <label class="block text-[11px] font-semibold text-slate-400 mb-1">Test Number *</label>
+                  <input id="cbt-param-testno" type="number" min="1" value="1" placeholder="e.g. 1, 2, 3..." class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+              </div>
+          </div>
+
+          <!-- Row 2: Upload PDF/Image or Paste Raw Text + Official Answer Key (Same as PYQ Importer) -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2">
+              <div class="space-y-2.5">
+                  <label class="block text-[11px] font-semibold text-slate-400">2. Upload Test PDF / Image OR Paste Questions Text</label>
+                  <label for="cbt-file-input" class="flex flex-col items-center justify-center border border-dashed border-slate-700 hover:border-teal-500 rounded-xl p-4 cursor-pointer bg-slate-950/60 transition">
+                      <i class="fa-solid fa-cloud-arrow-up text-teal-400 text-lg mb-1"></i>
+                      <span id="cbt-file-label" class="text-xs text-slate-300">Click to select Test PDF / Screenshot</span>
+                      <input id="cbt-file-input" type="file" accept=".pdf,image/*" class="hidden" onchange="handleCbtFileSelect(this)">
+                  </label>
+                  <textarea id="cbt-new-raw" rows="5" placeholder="Or paste raw test questions text directly here...&#10;1. Question text...&#10;(a) Option A  (b) Option B  (c) Option C  (d) Option D" class="w-full bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 outline-none focus:border-teal-500"></textarea>
+              </div>
+
+              <div class="space-y-2.5 flex flex-col">
+                  <label class="block text-[11px] font-semibold text-slate-400">3. Official Answer Key (Format: 1-B, 2-C, 3-A...)</label>
+                  <textarea id="cbt-new-keys" rows="7" placeholder="1-B, 2-C, 3-C, 4-B, 5-C..." class="w-full flex-1 bg-slate-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-200 outline-none focus:border-teal-500"></textarea>
+              </div>
+          </div>
+
+          <div class="flex items-center justify-between pt-2 border-t border-slate-800">
+              <span id="cbt-import-status" class="text-xs text-teal-300"></span>
+              <div class="flex gap-2">
+                  <button onclick="document.getElementById('cbt-creator-modal').classList.add('hidden')" class="px-4 py-2 rounded-lg bg-slate-800 text-xs text-slate-300">Cancel</button>
+                  <button id="cbt-extract-save-btn" onclick="processAndSaveCbtTest()" class="px-5 py-2.5 rounded-lg bg-teal-600 hover:bg-teal-500 text-xs font-bold text-white flex items-center gap-2">
+                      <i class="fa-solid fa-microchip"></i> Extract & Save to Test Series
+                  </button>
+              </div>
+          </div>
+      </div>
 
         <!-- Saved Mock Tests List -->
         <div id="cbt-test-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4"></div>
@@ -2561,20 +2605,61 @@ function loadSampleCbtTest() {
     renderCbtLobby();
 }
 
-function saveNewCbtTest() {
-    const title = document.getElementById('cbt-new-title').value.trim() || 'Untitled Mock Test';
-    const durationMins = parseInt(document.getElementById('cbt-new-duration').value) || 60;
-    const rawText = document.getElementById('cbt-new-raw').value.trim();
-    const keyInput = document.getElementById('cbt-new-keys').value.trim();
+const CBT_HIERARCHY = {
+    GS: {
+        'Vajiram': ['Powerup', 'CAMP', 'Powerup CA'],
+        'Forum IAS': ['SFG']
+    },
+    CSAT: {
+        'IAS Setu': ['CSAT Test'],
+        'Forum IAS': ['SFG']
+    }
+};
 
-    if (!rawText) return alert('Please paste questions text first.');
+let selectedCbtFile = null;
 
+function initCbtHierarchyDropdowns() {
+    const examEl = document.getElementById('cbt-param-exam');
+    if (!examEl) return;
+    onCbtExamChange();
+}
+
+function onCbtExamChange() {
+    const exam = document.getElementById('cbt-param-exam').value;
+    const coachingEl = document.getElementById('cbt-param-coaching');
+    const coachings = Object.keys(CBT_HIERARCHY[exam] || {});
+    coachingEl.innerHTML = coachings.map(c => `<option value="${c}">${c}</option>`).join('');
+    onCbtCoachingChange();
+}
+
+function onCbtCoachingChange() {
+    const exam = document.getElementById('cbt-param-exam').value;
+    const coaching = document.getElementById('cbt-param-coaching').value;
+    const seriesEl = document.getElementById('cbt-param-series');
+    const seriesList = (CBT_HIERARCHY[exam] && CBT_HIERARCHY[exam][coaching]) || [];
+    seriesEl.innerHTML = seriesList.map(s => `<option value="${s}">${s}</option>`).join('');
+}
+
+function handleCbtFileSelect(input) {
+    selectedCbtFile = input.files && input.files[0] ? input.files[0] : null;
+    const label = document.getElementById('cbt-file-label');
+    if (label) {
+        label.textContent = selectedCbtFile
+            ? `File Ready: ${selectedCbtFile.name} (${(selectedCbtFile.size / 1024).toFixed(1)} KB)`
+            : 'Click to select Test PDF / Screenshot';
+    }
+}
+
+function parseCbtKeyMap(keyInput) {
     const keyMap = {};
-    keyInput.split(/[,;\s]+/).forEach(pair => {
+    (keyInput || '').split(/[,;\s]+/).forEach(pair => {
         const m = pair.match(/^(\d+)[-.:]([A-Da-d])$/);
         if (m) keyMap[parseInt(m[1])] = m[2].toUpperCase();
     });
+    return keyMap;
+}
 
+function parseRawTextToCbtQuestions(rawText, keyMap) {
     const blocks = rawText.split(/\n(?=\d+[\.\)]\s)/);
     const questions = [];
     blocks.forEach((blk, idx) => {
@@ -2598,30 +2683,100 @@ function saveNewCbtTest() {
             });
         }
     });
+    return questions;
+}
 
-    if (questions.length === 0) return alert('Could not parse questions. Ensure format is 1. Question... with (a) (b) (c) (d).');
+async function processAndSaveCbtTest() {
+    const exam = document.getElementById('cbt-param-exam').value;
+    const coaching = document.getElementById('cbt-param-coaching').value;
+    const series = document.getElementById('cbt-param-series').value;
+    const testNo = parseInt(document.getElementById('cbt-param-testno').value) || 1;
+    const rawText = document.getElementById('cbt-new-raw').value.trim();
+    const keyInput = document.getElementById('cbt-new-keys').value.trim();
+    const statusEl = document.getElementById('cbt-import-status');
 
-    cbtTestsDb.unshift({ id: 'mock_' + Date.now(), title, durationMins, questions });
+    if (!rawText && !selectedCbtFile) {
+        return alert('Please upload a PDF/Image OR paste raw questions text.');
+    }
+
+    const keyMap = parseCbtKeyMap(keyInput);
+    let questions = [];
+
+    if (rawText) {
+        questions = parseRawTextToCbtQuestions(rawText, keyMap);
+    } else if (selectedCbtFile) {
+        statusEl.textContent = 'Extracting questions via AI Engine...';
+        try {
+            if (typeof extractQuestionsFromUploadedFile === 'function') {
+                const extracted = await extractQuestionsFromUploadedFile(selectedCbtFile, keyMap);
+                questions = extracted.map((q, idx) => ({
+                    qNo: q.qNo || idx + 1,
+                    text: q.question || q.text,
+                    options: q.options || [],
+                    answer: keyMap[q.qNo || idx + 1] || q.officialKey || 'A'
+                }));
+            } else {
+                alert('PDF/Image extraction helper not linked yet—paste raw text or connect extractor in next step.');
+                statusEl.textContent = '';
+                return;
+            }
+        } catch (err) {
+            statusEl.textContent = '';
+            return alert('Extraction error: ' + err.message);
+        }
+    }
+
+    if (questions.length === 0) {
+        statusEl.textContent = '';
+        return alert('No valid questions parsed. Check formatting (1. Question... with (a) (b) (c) (d)).');
+    }
+
+    const durationMins = exam === 'CSAT'
+        ? Math.max(10, Math.round(questions.length * 1.5))
+        : Math.max(10, Math.round(questions.length * 1.2));
+
+    const title = `${coaching} ${series} - Test ${testNo}`;
+    cbtTestsDb.unshift({
+        id: 'mock_' + Date.now(),
+        exam,
+        coaching,
+        series,
+        testNo,
+        title,
+        durationMins,
+        questions
+    });
+
     localStorage.setItem('upsc_mock_tests_db', JSON.stringify(cbtTestsDb));
+    statusEl.textContent = '';
+    selectedCbtFile = null;
+    document.getElementById('cbt-new-raw').value = '';
+    document.getElementById('cbt-new-keys').value = '';
+    document.getElementById('cbt-file-label').textContent = 'Click to select Test PDF / Screenshot';
     document.getElementById('cbt-creator-modal').classList.add('hidden');
     renderCbtLobby();
 }
 
 function renderCbtLobby() {
+    initCbtHierarchyDropdowns();
     const list = document.getElementById('cbt-test-list');
     if (!list) return;
     if (cbtTestsDb.length === 0) {
-        list.innerHTML = `<div class="col-span-full text-center py-12 text-xs text-slate-400 bg-slate-900/50 border border-dashed border-slate-800 rounded-2xl">No mock tests added yet. Click <b>+ Load Sample MIH Test</b> or <b>+ Add New Mock Test</b> above.</div>`;
+        list.innerHTML = `<div class="col-span-full text-center py-12 text-xs text-slate-400 bg-slate-900/50 border border-dashed border-slate-800 rounded-2xl">No mock tests added yet. Click <b>+ Add New Mock Test</b> above to insert your first GS or CSAT test.</div>`;
         return;
     }
     list.innerHTML = cbtTestsDb.map((t, idx) => `
         <div class="bg-slate-900 border border-slate-800 rounded-xl p-5 flex flex-col justify-between gap-4">
             <div>
-                <div class="flex items-center justify-between">
-                    <span class="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-teal-950 text-teal-300 border border-teal-800/50">${t.questions.length} Qs • ${t.durationMins} Mins</span>
+                <div class="flex items-center justify-between gap-2">
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-amber-950 text-amber-300 border border-amber-700/50">${t.exam || 'GS'}</span>
+                        <span class="text-[10px] font-bold uppercase px-2 py-0.5 rounded bg-teal-950 text-teal-300 border border-teal-800/50">${t.questions.length} Qs • ${t.durationMins}m</span>
+                    </div>
                     <button onclick="deleteCbtTest(${idx})" class="text-xs text-slate-500 hover:text-red-400">✕</button>
                 </div>
                 <h4 class="font-bold text-slate-100 mt-2.5 text-sm">${t.title}</h4>
+                <p class="text-[11px] text-slate-400 mt-1">${t.coaching || ''} • ${t.series || ''} • Test #${t.testNo || 1}</p>
             </div>
             <button onclick="startCbtTest(${idx})" class="w-full py-2 rounded-lg bg-teal-700 hover:bg-teal-600 text-white font-bold text-xs tracking-wide transition">Start CBT Test →</button>
         </div>
