@@ -2329,12 +2329,27 @@ ${extraContent}`;
 
                 // 5. Deduplicate by valid qNum & FORCE-LOCK official answer keys deterministically in JS
                 const seen = new Set();
+                const seenSigs = new Set();
+                const ignoredItems = [];
                 const finalized = [];
                 for (let idx = 0; idx < allParsed.length; idx++) {
                     const item = allParsed[idx];
                     const parsedNum = parseInt(item.qNum, 10);
                     const qNum = (!isNaN(parsedNum) && parsedNum > 0) ? parsedNum : (idx + 1000);
                     if (seen.has(qNum)) continue;
+
+                    // With an answer key, only accept question numbers that are in the key (drops misread/extra items)
+                    if (Object.keys(keyMap).length > 0 && !(qNum in keyMap)) {
+                        ignoredItems.push(qNum >= 1000 ? '?' : qNum);
+                        continue;
+                    }
+                    // Drop the same question read twice under different numbers (page-overlap duplicates)
+                    const sig = String(item.question || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 200) + '|' + (Array.isArray(item.options) ? item.options.join('|').toLowerCase().slice(0, 100) : '');
+                    if (seenSigs.has(sig)) {
+                        ignoredItems.push(`dup of Q${qNum}`);
+                        continue;
+                    }
+                    seenSigs.add(sig);
                     seen.add(qNum);
 
                     const lockedKey = keyMap[qNum] || (item.officialKey || 'A').toUpperCase().trim().charAt(0);
@@ -2356,6 +2371,11 @@ ${extraContent}`;
                         eliminationLogic: "Pending deep AI enrichment.",
                         peripheralKnowledge: "Pending deep AI enrichment."
                     });
+                }
+
+                if (ignoredItems.length > 0) {
+                    console.log('[PYQ import] Ignored extra items:', ignoredItems);
+                    alert(`Ignored ${ignoredItems.length} extra/duplicate item(s) the AI returned that do not match your answer key: ${ignoredItems.join(', ')}`);
                 }
 
                 // Tell the user which numbers from the answer key were NOT extracted
