@@ -1935,6 +1935,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
 
                 async function runBatchExtraction(batchParts, label) {
                     let lastError = "All configured AI keys/models are busy.";
+                    const currentBatchIdx = rrCounter++;
 
                     // A. Sticky Single-Key Gemini Router (Uses only 1 key until its quota is exhausted)
                     let geminiError = "";
