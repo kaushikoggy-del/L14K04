@@ -2331,6 +2331,7 @@ ${extraContent}`;
                 const seen = new Set();
                 const seenSigs = new Set();
                 const ignoredItems = [];
+                const noKeyNums = [];
                 const finalized = [];
                 for (let idx = 0; idx < allParsed.length; idx++) {
                     const item = allParsed[idx];
@@ -2339,7 +2340,8 @@ ${extraContent}`;
                     if (seen.has(qNum)) continue;
 
                     // With an answer key, only accept question numbers that are in the key (drops misread/extra items)
-                    if (Object.keys(keyMap).length > 0 && !(qNum in keyMap)) {
+                    // (only when the key is a full paper key; a short/partial key must not delete real questions)
+                    if (Object.keys(keyMap).length >= 40 && !(qNum in keyMap)) {
                         ignoredItems.push(qNum >= 1000 ? '?' : qNum);
                         continue;
                     }
@@ -2351,6 +2353,7 @@ ${extraContent}`;
                     }
                     seenSigs.add(sig);
                     seen.add(qNum);
+                    if (Object.keys(keyMap).length > 0 && !(qNum in keyMap)) noKeyNums.push(qNum >= 1000 ? '?' : qNum);
 
                     const lockedKey = keyMap[qNum] || (item.officialKey || 'A').toUpperCase().trim().charAt(0);
                     const optIndex = { A: 0, B: 1, C: 2, D: 3 }[lockedKey] ?? 0;
@@ -2376,6 +2379,10 @@ ${extraContent}`;
                 if (ignoredItems.length > 0) {
                     console.log('[PYQ import] Ignored extra items:', ignoredItems);
                     alert(`Ignored ${ignoredItems.length} extra/duplicate item(s) the AI returned that do not match your answer key: ${ignoredItems.join(', ')}`);
+                }
+
+                if (noKeyNums.length > 0) {
+                    alert(`${noKeyNums.length} question(s) are NOT in your answer key, so their Key is only an AI guess: ${noKeyNums.slice(0, 40).join(', ')}${noKeyNums.length > 40 ? ', ...' : ''}\n\nPaste the full answer key and run again, or fix the Key box in the preview before saving.`);
                 }
 
                 // Tell the user which numbers from the answer key were NOT extracted
