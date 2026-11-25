@@ -1789,26 +1789,67 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
         // OFFLINE FALLBACK AUTO-TAGGER
         function fallbackRuleTagger(text, exam, year, answerKey) {
             const keysMap = parseAnswerKeys(answerKey);
-            const blocks = text.split(/\n(?=\d+[\.\)])/).filter(b => b.trim().length > 10);
+            // Start a new question only at a line number that is in the answer key (or the next number in sequence),
+            // so numbered statements inside a question ("1. ...", "2. ...") are not mistaken for new questions.
+            const blocksArr = [];
+            let cur = [];
+            let lastQ = 0;
+            const hasKeys = Object.keys(keysMap).length > 0;
+            for (const line of text.split('\n')) {
+                const m = line.match(/^\s*(\d+)\s*[.)]\s+\S/);
+                if (m) {
+                    const n = parseInt(m[1], 10);
+                    const isNew = n > lastQ && (hasKeys ? (n in keysMap) : (lastQ === 0 || n === lastQ + 1));
+                    if (isNew) {
+                        if (cur.length) blocksArr.push(cur.join('\n'));
+                        cur = [line];
+                        lastQ = n;
+                        continue;
+                    }
+                }
+                cur.push(line);
+            }
+            if (cur.length) blocksArr.push(cur.join('\n'));
+            const blocks = blocksArr.filter(b => b.trim().length > 10);
             
             return blocks.map((block, idx) => {
-                const qNum = idx + 1;
-                const lines = block.split('\n').map(l => l.trim()).filter(Boolean);
-                const questionText = lines[0] || `Question ${qNum}`;
-                
+                // Use the real printed question number (e.g. "24." -> 24) so the answer key matches
+                const numMatch = block.match(/^\s*(\d+)\s*[.)]\s*/);
+                const qNum = numMatch ? parseInt(numMatch[1], 10) : idx + 1;
+                const body = block.replace(/^\s*\d+\s*[.)]\s*/, '');
+
+                // Split out options (a) (b) (c) (d) in order
+                let questionText = body.trim();
+                let options = ["Option (a)", "Option (b)", "Option (c)", "Option (d)"];
+                const positions = [];
+                let from = 0;
+                for (const letter of ['a', 'b', 'c', 'd']) {
+                    const re = new RegExp(`(?:^|\\s)\\(?${letter}\\)`, 'i');
+                    const m = re.exec(body.slice(from));
+                    if (!m) break;
+                    const start = from + m.index;
+                    positions.push({ start, end: start + m[0].length });
+                    from = start + m[0].length;
+                }
+                if (positions.length === 4) {
+                    questionText = body.slice(0, positions[0].start).trim();
+                    options = positions.map((p, i) => body.slice(p.end, i < 3 ? positions[i + 1].start : body.length).trim());
+                }
+
                 // Auto Detect Subject & Micro-Theme from text keywords
                 const detected = autoDetectSubjectAndTheme(block);
                 const assignedKey = keysMap[qNum] || 'A';
+                const keyIdx = { A: 0, B: 1, C: 2, D: 3 }[assignedKey] ?? 0;
 
                 return {
-                    id: `pyq_imp_${Date.now()}_${idx}`,
+                    id: `pyq_${String(exam).replace(/\s+/g, '')}_${parseInt(year, 10) || year}_${qNum}`,
                     exam: exam,
-                    year: year,
+                    year: parseInt(year, 10) || year,
                     subject: detected.subject,
                     theme: detected.theme,
-                    question: block,
-                    options: ["Option (a)", "Option (b)", "Option (c)", "Option (d)"],
-                    correctAnswer: "Option (a)",
+                    question: questionText,
+                    options: options,
+                    correctAnswer: options[keyIdx],
                     officialKey: assignedKey,
                     eliminationLogic: `Auto-generated elimination logic based on official key ${assignedKey}. Verified against taxonomy standard.`,
                     peripheralKnowledge: `Peripheral facts related to ${detected.theme} for ${exam} preparation.`
