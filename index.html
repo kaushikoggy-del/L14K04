@@ -1984,6 +1984,26 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     return ['llama3-70b-8192', 'mixtral-8x7b-32768'];
                 }
 
+                // Groq models that can read images (used when Gemini blocks a scanned page, e.g. RECITATION)
+                let cachedGroqVisionModels = null;
+                async function getLiveGroqVisionModels(apiKey) {
+                    if (cachedGroqVisionModels && cachedGroqVisionModels.length > 0) return cachedGroqVisionModels;
+                    try {
+                        const res = await fetchWithTimeout('https://api.groq.com/openai/v1/models', {
+                            headers: { 'Authorization': `Bearer ${apiKey}` }
+                        }, 15000);
+                        const data = await res.json();
+                        if (res.ok && Array.isArray(data.data)) {
+                            const valid = data.data.map(m => m.id).filter(id => /llama-4|scout|maverick|vision/i.test(id) && !/guard|whisper|tts/i.test(id));
+                            if (valid.length > 0) {
+                                cachedGroqVisionModels = valid.slice(0, 3);
+                                return cachedGroqVisionModels;
+                            }
+                        }
+                    } catch (_) {}
+                    return ['meta-llama/llama-4-scout-17b-16e-instruct'];
+                }
+
                 async function runBatchExtraction(batchParts, label, expectQs = false) {
                     // If the page text clearly contains numbered questions, an empty [] answer is suspicious: try the next model.
                     const accept = p => p && !(p.length === 0 && expectQs);
@@ -2070,8 +2090,8 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     }
 
                     // B. Failover to Groq with Dynamic Model Discovery (Text-only batches)
-                    if (groqKeys.length > 0 && !hasImages) {
-                        const groqModels = await getLiveGroqModels(groqKeys[0]);
+                    if (groqKeys.length > 0) {
+                        const groqModels = hasImages ? await getLiveGroqVisionModels(groqKeys[0]) : await getLiveGroqModels(groqKeys[0]);
                         for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
                             const activeKey = groqKeys[keyIdx];
