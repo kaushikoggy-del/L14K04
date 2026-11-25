@@ -1984,7 +1984,9 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     return ['llama3-70b-8192', 'mixtral-8x7b-32768'];
                 }
 
-                async function runBatchExtraction(batchParts, label) {
+                async function runBatchExtraction(batchParts, label, expectQs = false) {
+                    // If the page text clearly contains numbered questions, an empty [] answer is suspicious: try the next model.
+                    const accept = p => p && !(p.length === 0 && expectQs);
                     let lastError = "All configured AI keys/models are busy.";
                     const currentBatchIdx = rrCounter++;
                     const hasImages = batchParts.some(p => p.inlineData);
@@ -2041,7 +2043,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
 
                                     const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
                                     const parsed = extractJsonArray(rawText);
-                                    if (parsed) return parsed;
+                                    if (accept(parsed)) return parsed;
                                     geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output (${rawText.slice(0, 60)}...)`;
                                     lastError = geminiError;
                                 } catch (err) {
@@ -2086,7 +2088,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                         continue;
                                     }
                                     const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
-                                    if (parsed) return parsed;
+                                    if (accept(parsed)) return parsed;
                                 } catch (err) {
                                     lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1} (${gModel}): ${err.name === 'AbortError' ? 'Timed out (90s)' : err.message}`;
                                 }
@@ -2123,7 +2125,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                         continue;
                                     }
                                     const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
-                                    if (parsed) return parsed;
+                                    if (accept(parsed)) return parsed;
                                 } catch (err) {
                                     lastError = `OpenRouter #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (15s)' : err.message}`;
                                 }
@@ -2148,9 +2150,9 @@ ${extraContent}`;
                 let allParsed = [];
                 const failedBatches = [];
                 // One failing batch must not throw away the whole PDF: record it and continue.
-                const safeBatch = async (parts, label) => {
+                const safeBatch = async (parts, label, expectQs = false) => {
                     try {
-                        return await runBatchExtraction(parts, label);
+                        return await runBatchExtraction(parts, label, expectQs);
                     } catch (e) {
                         failedBatches.push(`${label}: ${e.message}`);
                         return [];
@@ -2197,7 +2199,10 @@ ${extraContent}`;
                                 nextHead ? `[CONTEXT FROM NEXT PAGE START]:\n${nextHead}` : ''
                             ].filter(Boolean).join('\n\n');
 
-                            const resItems = await safeBatch([{ text: buildPrompt(chunkText) }], batchLabel);
+                            const mainText = pageTexts.slice(startPage - 1, endPage).join(' ');
+                            const expectQs = (mainText.match(/(?:^|\s)\d{1,3}\s*[.)]\s+\S/g) || []).length >= 3;
+                            const resItems = await safeBatch([{ text: buildPrompt(chunkText) }], batchLabel, expectQs);
+                            console.log(`[PYQ import] ${batchLabel}: ${resItems.length} questions (expectQs=${expectQs})`);
                             allParsed.push(...resItems);
                         } else {
                             currentStatusPrefix = `Rendering ${batchLabel}`;
@@ -2278,6 +2283,15 @@ ${extraContent}`;
                         eliminationLogic: "Pending deep AI enrichment.",
                         peripheralKnowledge: "Pending deep AI enrichment."
                     });
+                }
+
+                // Tell the user which numbers from the answer key were NOT extracted
+                const expectedNums = Object.keys(keyMap).map(Number);
+                if (expectedNums.length > 0) {
+                    const missing = expectedNums.filter(n => !seen.has(n)).sort((a, b) => a - b);
+                    if (missing.length > 0) {
+                        alert(`Extracted ${finalized.length} of ${expectedNums.length} questions (per your answer key).\n\nMissing Q numbers: ${missing.join(', ')}\n\nTip: upload only the pages containing those questions and run again.`);
+                    }
                 }
 
                 finalized.sort((a, b) => parseInt(a.id.split('_').pop(), 10) - parseInt(b.id.split('_').pop(), 10));
