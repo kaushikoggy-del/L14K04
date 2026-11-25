@@ -2011,7 +2011,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             body: JSON.stringify({
                                                 contents: [{ role: 'user', parts: batchParts }],
                                                 generationConfig: {
-                                                    maxOutputTokens: 16384,
+                                                    maxOutputTokens: 8192,
                                                     temperature: 0.0,
                                                     responseMimeType: "application/json"
                                                 }
@@ -2028,7 +2028,9 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                         geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): ${errMsg}`;
                                         lastError = geminiError;
 
-                                        if ([400, 401, 403, 429].includes(res.status) || /quota|exceeded|limit|invalid|expired/i.test(errMsg)) {
+                                        // Only key-level failures (bad key / quota) skip the whole key.
+                                        // A 400/404 is usually model-specific (unsupported param/input), so try the next model.
+                                        if ([401, 403, 429].includes(res.status) || /API key not valid|API_KEY_INVALID|quota|RESOURCE_EXHAUSTED|expired/i.test(errMsg)) {
                                             keyExhausted = true;
                                             break;
                                         }
@@ -2247,7 +2249,7 @@ ${extraContent}`;
                         : ["Option A", "Option B", "Option C", "Option D"];
 
                     finalized.push({
-                        id: `pyq_${year}_${qNum}`,
+                        id: `pyq_${String(exam).replace(/\s+/g, '')}_${year}_${qNum}`,
                         exam: exam,
                         year: parseInt(year, 10) || year,
                         subject: item.subject || 'Miscellaneous',
@@ -2276,6 +2278,8 @@ ${extraContent}`;
             const container = document.getElementById('verification-cards-container');
             container.innerHTML = '';
 
+            const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
             list.forEach((q, idx) => {
                 const card = document.createElement('div');
                 card.className = 'bg-black/30 p-4 rounded-xl border border-gray-700/70 space-y-3';
@@ -2297,15 +2301,15 @@ ${extraContent}`;
                             <input type="text" value="${q.officialKey}" onchange="currentVerificationList[${idx}].officialKey = this.value" class="w-10 bg-black/40 border border-gray-600 rounded px-1.5 py-1 text-center text-amber-400 font-bold">
                         </div>
                     </div>
-                    <textarea onchange="currentVerificationList[${idx}].question = this.value" rows="3" class="w-full bg-black/40 border border-gray-600 rounded p-2 text-xs text-gray-200 font-pyq-text">${q.question}</textarea>
+                    <textarea onchange="currentVerificationList[${idx}].question = this.value" rows="3" class="w-full bg-black/40 border border-gray-600 rounded p-2 text-xs text-gray-200 font-pyq-text">${esc(q.question)}</textarea>
                     <div class="grid grid-cols-2 gap-2">
                         <div>
                             <label class="block text-[10px] text-gray-400 mb-0.5">Micro-Theme:</label>
-                            <input type="text" value="${q.theme}" onchange="currentVerificationList[${idx}].theme = this.value" class="w-full bg-black/40 border border-gray-600 rounded px-2 py-1 text-xs text-amber-300">
+                            <input type="text" value="${esc(q.theme)}" onchange="currentVerificationList[${idx}].theme = this.value" class="w-full bg-black/40 border border-gray-600 rounded px-2 py-1 text-xs text-amber-300">
                         </div>
                         <div>
                             <label class="block text-[10px] text-gray-400 mb-0.5">Correct Answer Text:</label>
-                            <input type="text" value="${q.correctAnswer}" onchange="currentVerificationList[${idx}].correctAnswer = this.value" class="w-full bg-black/40 border border-gray-600 rounded px-2 py-1 text-xs text-emerald-300">
+                            <input type="text" value="${esc(q.correctAnswer)}" onchange="currentVerificationList[${idx}].correctAnswer = this.value" class="w-full bg-black/40 border border-gray-600 rounded px-2 py-1 text-xs text-emerald-300">
                         </div>
                     </div>
                 `;
@@ -2659,7 +2663,8 @@ function undoLastBatch() {
     const confirmed = confirm(`Do you really want to remove the past ${count} questions?\n\nClick OK for YES (Remove) or Cancel for NO (Keep).`);
     if (!confirmed) return;
 
-    pyqDatabase.splice(-count, count);
+    // New batches are added at the START of the list (unshift), so remove from the start.
+    pyqDatabase.splice(0, count);
     localStorage.removeItem('lastAddedBatchCount');
     saveDatabase();
     applyFilters();
