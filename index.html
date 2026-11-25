@@ -2211,7 +2211,7 @@ ${extraContent}`;
                             const scanEnd = endPage < pdfDoc.numPages ? endPage + 1 : endPage;
                             for (let p = startPage; p <= scanEnd; p++) {
                                 const page = await pdfDoc.getPage(p);
-                                const viewport = page.getViewport({ scale: 1.0 });
+                                const viewport = page.getViewport({ scale: 1.6 });
                                 const canvas = document.createElement('canvas');
                                 canvas.width = viewport.width;
                                 canvas.height = viewport.height;
