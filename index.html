@@ -2002,8 +2002,14 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                             const activeKey = geminiKeys[keyIdx];
                             let keyExhausted = false;
 
-                            for (const cleanModel of modelsToTry) {
-                                currentStatusPrefix = `${label} • Gemini Key #${keyIdx + 1}/${geminiKeys.length} [Locked] (${cleanModel})`;
+                            // Each model gets up to 3 tries (temperature 0 / 0.5 / 0.9), but extra tries only happen
+                            // when Gemini blocks the answer as RECITATION (its copyright filter on well-known texts).
+                            const modelPlan = modelsToTry.flatMap(m => [0.0, 0.5, 0.9].map(t => ({ m, t })));
+                            let skipModel = null;
+                            for (const { m: cleanModel, t: temp } of modelPlan) {
+                                if (skipModel === cleanModel) continue;
+                                skipModel = cleanModel;
+                                currentStatusPrefix = `${label} • Gemini Key #${keyIdx + 1}/${geminiKeys.length} [Locked] (${cleanModel})${temp > 0 ? ' • retry (recitation filter)' : ''}`;
                                 const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${activeKey}`;
 
                                 try {
@@ -2016,7 +2022,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                                 contents: [{ role: 'user', parts: batchParts }],
                                                 generationConfig: {
                                                     maxOutputTokens: 32768,
-                                                    temperature: 0.0,
+                                                    temperature: temp,
                                                     responseMimeType: "application/json"
                                                 }
                                             })
@@ -2048,6 +2054,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                     if (accept(parsed)) return parsed;
                                     geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output (${rawText.slice(0, 60)}...)${whyEmpty}`;
                                     lastError = geminiError;
+                                    if (cand?.finishReason === 'RECITATION') skipModel = null; // retry same model with higher temperature
                                 } catch (err) {
                                     geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (90s)' : err.message}`;
                                     lastError = geminiError;
