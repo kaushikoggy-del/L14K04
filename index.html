@@ -494,6 +494,11 @@
                             <label class="block text-xs font-semibold text-gray-300 mb-1">Exam Year *</label>
                             <input type="number" id="import-exam-year" value="2024" min="1990" max="2030" class="w-full bg-black/40 border border-gray-600 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-amber-500">
                         </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-300 mb-1">Total questions in paper (optional)</label>
+                            <input type="number" id="import-total-questions" placeholder="e.g. 132" min="1" max="300" class="w-full bg-black/40 border border-gray-600 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-amber-500">
+                            <p class="text-[10px] text-gray-500 mt-1">Helps find missing questions even without an answer key.</p>
+                        </div>
                     </div>
                 </div>
 
@@ -536,6 +541,8 @@
                             <i class="fa-solid fa-floppy-disk"></i> Save All to Database
                         </button>
                     </div>
+
+                    <div id="missing-questions-banner" class="hidden rounded-xl border px-4 py-3 text-xs"></div>
 
                     <div id="verification-cards-container" class="space-y-4 max-h-[500px] overflow-y-auto pr-2">
                         <!-- Dynamically Generated Preview Cards -->
@@ -2484,9 +2491,58 @@ ${extraContent}`;
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
 
+        // Shows (and keeps visible) which question numbers are missing from the parsed list.
+        // Expected numbers = answer-key numbers + 1..Total (if typed) + every gap between 1 and the highest number found.
+        function updateMissingBanner(list) {
+            const banner = document.getElementById('missing-questions-banner');
+            if (!banner) return;
+            const found = new Set();
+            const unnumbered = [];
+            list.forEach((q, i) => {
+                const n = parseInt(String(q.id || '').split('_').pop(), 10);
+                if (!isNaN(n) && n > 0 && n < 1000) found.add(n); else unnumbered.push(i + 1);
+            });
+            const expected = new Set();
+            try {
+                Object.keys(parseAnswerKeys(document.getElementById('import-answer-key').value || '')).forEach(k => expected.add(parseInt(k, 10)));
+            } catch (e) {}
+            const total = parseInt((document.getElementById('import-total-questions') || {}).value, 10);
+            if (!isNaN(total) && total > 0) for (let n = 1; n <= total; n++) expected.add(n);
+            const maxFound = found.size ? Math.max(...found) : 0;
+            // Only fill 1..max when the list looks like a whole paper starting at Q1 (not a partial re-upload like Q81-85)
+            const minFound = found.size ? Math.min(...found) : 0;
+            const fillFrom = (minFound <= 3 || (!isNaN(total) && total > 0)) ? 1 : minFound;
+            for (let n = fillFrom; n <= maxFound; n++) expected.add(n);
+
+            const missing = [...expected].filter(n => !isNaN(n) && !found.has(n)).sort((a, b) => a - b);
+            const extra = [...found].filter(n => expected.size && !expected.has(n)).sort((a, b) => a - b);
+            const hasReference = (!isNaN(total) && total > 0) || Object.keys(parseAnswerKeys(document.getElementById('import-answer-key').value || '')).length > 0;
+            if (missing.length === 0 && unnumbered.length === 0) {
+                if (hasReference && list.length > 0) {
+                    banner.className = 'rounded-xl border border-emerald-600/50 bg-emerald-900/20 text-emerald-300 px-4 py-3 text-xs';
+                    banner.innerHTML = `<b>All ${expected.size} expected questions are present.</b>`;
+                } else if (list.length > 0) {
+                    banner.className = 'rounded-xl border border-amber-600/50 bg-amber-900/20 text-amber-200 px-4 py-3 text-xs';
+                    banner.innerHTML = `No gaps found between Q${minFound} and Q${maxFound}. Questions after Q${maxFound} cannot be checked unless you type the paper's total in "Total questions in paper" (or paste a full answer key) and run again.`;
+                } else {
+                    banner.className = 'hidden';
+                    banner.innerHTML = '';
+                }
+                return;
+            }
+            const parts = [];
+            if (missing.length) parts.push(`<b>${missing.length} question(s) NOT parsed:</b> <span class="font-mono text-sm text-red-200">${missing.join(', ')}</span>`);
+            if (unnumbered.length) parts.push(`${unnumbered.length} parsed card(s) have no valid question number (card position${unnumbered.length > 1 ? 's' : ''} ${unnumbered.join(', ')}) — check them.`);
+            if (extra.length) parts.push(`Not in your key/total but parsed: ${extra.join(', ')}.`);
+            parts.push('Upload only those missing questions (as text or image) with their keys, then save.');
+            banner.className = 'rounded-xl border border-red-500/60 bg-red-900/25 text-red-200 px-4 py-3 text-xs space-y-1';
+            banner.innerHTML = parts.map(p => `<div>${p}</div>`).join('');
+        }
+
         function renderVerificationPreview(list) {
             currentVerificationList = list;
             document.getElementById('parsed-count').textContent = list.length;
+            updateMissingBanner(list);
             const container = document.getElementById('verification-cards-container');
             container.innerHTML = '';
 
