@@ -2189,7 +2189,10 @@ ${extraContent}`;
                         const endPage = Math.min((b + 1) * pagesPerBatch, pdfDoc.numPages);
                         const batchLabel = `Batch ${b + 1}/${totalBatches} (P.${startPage}-${endPage})`;
 
-                        if (isDigitalText) {
+                        // Decide per batch: a PDF can mix pages with a text layer and pages that are only images.
+                        const batchHasText = pageTexts.slice(startPage - 1, endPage).every(t => t.replace(/\s+/g, '').length > 200);
+
+                        if (batchHasText) {
                             // Include tail of previous page & head of next page so questions split across page breaks are never missed
                             const prevTail = startPage > 1 ? pageTexts[startPage - 2].slice(-700) : '';
                             const nextHead = endPage < pdfDoc.numPages ? pageTexts[endPage].slice(0, 700) : '';
