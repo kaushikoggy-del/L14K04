@@ -2057,7 +2057,78 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     // B. Failover to Groq with Dynamic Model Discovery (Text-only batches)
                     if (groqKeys.length > 0 && !hasImages) {
                         const groqModels = await getLiveGroqModels(groqKeys[0]);
-                        for (
+                        for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
+                            const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
+                            const activeKey = groqKeys[keyIdx];
+                            for (const gModel of groqModels) {
+                                currentStatusPrefix = `${label} • Groq #${keyIdx + 1} (${gModel})`;
+                                try {
+                                    const res = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${activeKey}`
+                                        },
+                                        body: JSON.stringify({
+                                            model: gModel,
+                                            messages: toOpenAIMessages(batchParts),
+                                            temperature: 0.0,
+                                            max_tokens: 8192
+                                        })
+                                    }, 90000);
+                                    const data = await res.json();
+                                    if (!res.ok || data.error) {
+                                        lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1} (${gModel}): ${data.error?.message || `HTTP ${res.status}`}`;
+                                        continue;
+                                    }
+                                    const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
+                                    if (parsed) return parsed;
+                                } catch (err) {
+                                    lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1} (${gModel}): ${err.name === 'AbortError' ? 'Timed out (90s)' : err.message}`;
+                                }
+                            }
+                        }
+                    }
+
+                    // C. Automatic Failover to OpenRouter (sk-or- keys) with 15s timeout so ISP blocks never hang
+                    if (openRouterKeys.length > 0) {
+                        const orModels = ['openrouter/free', 'google/gemini-2.0-flash', 'openai/gpt-4o-mini'];
+                        for (let kOffset = 0; kOffset < openRouterKeys.length; kOffset++) {
+                            const keyIdx = (currentBatchIdx + kOffset) % openRouterKeys.length;
+                            const activeKey = openRouterKeys[keyIdx];
+                            for (const orModel of orModels) {
+                                currentStatusPrefix = `${label} • OpenRouter #${keyIdx + 1} (${orModel.split('/').pop()})`;
+                                try {
+                                    const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
+                                        method: 'POST',
+                                        headers: {
+                                            'Content-Type': 'application/json',
+                                            'Authorization': `Bearer ${activeKey}`,
+                                            'HTTP-Referer': window.location.origin,
+                                            'X-Title': 'UPSC PYQ Analytics'
+                                        },
+                                        body: JSON.stringify({
+                                            model: orModel,
+                                            messages: toOpenAIMessages(batchParts),
+                                            temperature: 0.0
+                                        })
+                                    }, 15000);
+                                    const data = await res.json();
+                                    if (!res.ok || data.error) {
+                                        lastError = `OpenRouter #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
+                                        continue;
+                                    }
+                                    const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
+                                    if (parsed) return parsed;
+                                } catch (err) {
+                                    lastError = `OpenRouter #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (15s)' : err.message}`;
+                                }
+                            }
+                        }
+                    }
+
+                    throw new Error(lastError);
+                }
 
                 // Compact verbatim prompt
                 const buildPrompt = (extraContent = '') => `Extract EVERY UPSC MCQ printed in this batch 100% VERBATIM as a JSON array.
