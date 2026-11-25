@@ -2015,7 +2015,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             body: JSON.stringify({
                                                 contents: [{ role: 'user', parts: batchParts }],
                                                 generationConfig: {
-                                                    maxOutputTokens: 8192,
+                                                    maxOutputTokens: 32768,
                                                     temperature: 0.0,
                                                     responseMimeType: "application/json"
                                                 }
@@ -2041,10 +2041,12 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                         continue;
                                     }
 
-                                    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                                    const cand = data.candidates?.[0];
+                                    const rawText = (cand?.content?.parts || []).filter(p => !p.thought).map(p => p.text || '').join('');
+                                    const whyEmpty = rawText ? '' : ` [finishReason=${cand?.finishReason || 'none'}${data.promptFeedback?.blockReason ? ', blocked=' + data.promptFeedback.blockReason : ''}]`;
                                     const parsed = extractJsonArray(rawText);
                                     if (accept(parsed)) return parsed;
-                                    geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output (${rawText.slice(0, 60)}...)`;
+                                    geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output (${rawText.slice(0, 60)}...)${whyEmpty}`;
                                     lastError = geminiError;
                                 } catch (err) {
                                     geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (90s)' : err.message}`;
