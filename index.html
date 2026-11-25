@@ -758,6 +758,12 @@
               </div>
           </div>
 
+          <div>
+              <label class="block text-[11px] font-semibold text-slate-400 mb-1">Header / Footer words to skip (optional, comma separated)</label>
+              <input id="cbt-skip-words" type="text" placeholder="e.g. Vision IAS, www.visionias.in, Join Telegram @xyz, Test Series 2026" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 outline-none focus:border-teal-500">
+              <p class="text-[10px] text-slate-500 mt-1">Coaching name, page numbers, URLs, phone numbers and lines repeating on every page are skipped automatically. Use this box for anything extra.</p>
+          </div>
+
           <div class="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-800">
               <span id="cbt-import-status" class="text-xs font-medium text-teal-300"></span>
               <div class="flex gap-2 ml-auto">
@@ -2236,6 +2242,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
 Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
 Format: [{"qNum":1,"subject":"...","theme":"...","question":"exact full text including all statements/lists","options":["A text","B text","C text","D text"],"officialKey":"A"}]
 CRITICAL RULES:
+- IGNORE running headers/footers, page numbers, coaching/institute names, website URLs, phone numbers, watermarks and logos. Never include them inside a question, option or explanation.
 - Do NOT skip ANY question! Extract EVERY single numbered question present in the input.
 - Copy the exact printed question number into "qNum" (integer, e.g., Q98 -> 98).
 - Keep all numbered statements (1., 2., 3.) and pairs verbatim inside "question".
@@ -2989,10 +2996,104 @@ function handleCbtFileChange(type, input) {
     }
 }
 
-async function extractDigitalTextFromPdf(file, statusLabel) {
+// ===== Header / footer / watermark skipping for Test Series imports =====
+// Words to skip = coaching name chosen in the dropdown + anything typed in the "skip words" box.
+function getCbtSkipWords() {
+    const words = [];
+    try {
+        const coaching = (document.getElementById('cbt-param-coaching') || {}).value || '';
+        if (coaching.trim().length >= 3) words.push(coaching.trim());
+        const extra = (document.getElementById('cbt-skip-words') || {}).value || '';
+        extra.split(/[,\n]/).map(s => s.trim()).filter(s => s.length >= 3).forEach(s => words.push(s));
+    } catch (e) {}
+    return [...new Set(words.map(w => w.toLowerCase()))];
+}
+
+const CBT_BOILERPLATE_PATTERN = /(www\.|https?:\/\/|t\.me\/|\.com\b|\.in\b|\.org\b|\.co\b|©|all\s+rights\s+reserved|telegram|whatsapp|instagram|youtube|\bcall\s*(us|now)\b|\bcontact\b|\+?\d[\d\s-]{8,}\d)/i;
+const CBT_PAGE_NO_PATTERN = /^(?:page\s*)?\d+\s*(?:of|\/)\s*\d+$|^page\s*\d+$|^[-–—]\s*\d+\s*[-–—]$/i;
+
+// Does this single line of text look like a header/footer/watermark line?
+function isCbtBoilerplateLine(text, skipWords, inEdgeZone) {
+    const t = (text || '').replace(/\s+/g, ' ').trim();
+    if (!t) return false;
+    const low = t.toLowerCase();
+    if (CBT_PAGE_NO_PATTERN.test(t)) return true;
+    for (const w of skipWords) {
+        // short line that is basically just the skip word (so real question sentences mentioning it are kept)
+        if (low.includes(w) && low.length <= w.length + 60) return true;
+        if (low.replace(/\s+/g, '') === w.replace(/\s+/g, '')) return true;
+    }
+    if (inEdgeZone) {
+        if (/^\d{1,4}$/.test(t)) return true; // bare page number in the top/bottom margin
+        if (t.length <= 140 && CBT_BOILERPLATE_PATTERN.test(t)) return true;
+    }
+    return false;
+}
+
+// Text-level cleaner used for pasted text and as a final pass on extracted text (questions AND explanations)
+function cleanCbtText(rawText, skipWords) {
+    if (!rawText) return rawText;
+    return rawText.split('\n').filter(line => {
+        const t = line.trim();
+        if (!t) return true;
+        if (CBT_PAGE_NO_PATTERN.test(t)) return false;
+        const low = t.toLowerCase();
+        for (const w of skipWords) {
+            if (low.includes(w) && low.length <= w.length + 60) return false;
+        }
+        // URL / phone / copyright-style short lines are never part of a question or explanation
+        if (t.length <= 100 && /^(?:www\.|https?:\/\/|t\.me\/|©|all\s+rights\s+reserved)/i.test(t)) return false;
+        return true;
+    }).join('\n');
+}
+
+function cbtNormalizeForRepeat(s) {
+    return (s || '').toLowerCase().replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
+}
+
+function cbtGroupItemsIntoLines(items) {
+    const sorted = [...items].sort((a, b) => (b.transform[5] - a.transform[5]) || (a.transform[4] - b.transform[4]));
+    const lines = [];
+    for (const it of sorted) {
+        const y = it.transform[5];
+        const last = lines[lines.length - 1];
+        if (last && Math.abs(last.y - y) <= 4) last.items.push(it);
+        else lines.push({ y, items: [it] });
+    }
+    lines.forEach(l => {
+        l.items.sort((a, b) => a.transform[4] - b.transform[4]);
+        l.text = l.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+    });
+    return lines;
+}
+
+async function extractDigitalTextFromPdf(file, statusLabel, opts = {}) {
     const arrayBuffer = await file.arrayBuffer();
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     let fullText = '';
+    const skipWords = opts.skipWords || getCbtSkipWords();
+
+    // PASS 1: find lines in the top/bottom margins that repeat on many pages (running headers/footers)
+    const EDGE = 0.10; // top 10% and bottom 10% of each page
+    const repeatCount = {};
+    for (let pn = 1; pn <= pdf.numPages; pn++) {
+        const pg = await pdf.getPage(pn);
+        const H = pg.getViewport({ scale: 1.0 }).height;
+        const tc = await pg.getTextContent();
+        const edgeItems = tc.items.filter(it => it.str && it.str.trim() && it.transform && (it.transform[5] > H * (1 - EDGE) || it.transform[5] < H * EDGE));
+        const seenThisPage = new Set();
+        cbtGroupItemsIntoLines(edgeItems).forEach(l => {
+            const key = cbtNormalizeForRepeat(l.text);
+            if (key && key.length >= 3 && !seenThisPage.has(key)) {
+                seenThisPage.add(key);
+                repeatCount[key] = (repeatCount[key] || 0) + 1;
+            }
+        });
+    }
+    const repeatThreshold = Math.max(2, Math.ceil(pdf.numPages * 0.4));
+    const repeatedKeys = new Set(
+        pdf.numPages >= 3 ? Object.keys(repeatCount).filter(k => repeatCount[k] >= repeatThreshold) : []
+    );
 
     // Helper: extract actual drawn rectangle boxes from PDF vector graphics (for UPSC table questions)
     const extractDrawnBoxes = async (page) => {
@@ -3057,7 +3158,25 @@ async function extractDigitalTextFromPdf(file, statusLabel) {
         const content = await page.getTextContent();
         const boxes = await extractDrawnBoxes(page);
 
-        const items = content.items.filter(it => it.str && it.str.trim());
+        let items = content.items.filter(it => it.str && it.str.trim());
+
+        // PASS 2: drop header / footer / watermark items before building the text
+        const dropItems = new Set();
+        const pageH = viewport.height;
+        cbtGroupItemsIntoLines(items.filter(it => it.transform)).forEach(l => {
+            const inEdge = l.y > pageH * (1 - EDGE) || l.y < pageH * EDGE;
+            const isRepeated = inEdge && repeatedKeys.has(cbtNormalizeForRepeat(l.text));
+            if (isRepeated || isCbtBoilerplateLine(l.text, skipWords, inEdge)) {
+                l.items.forEach(it => dropItems.add(it));
+            }
+        });
+        // Single stray items (e.g. a watermark fragment) that are exactly the coaching name / a skip word
+        items.forEach(it => {
+            const low = it.str.trim().toLowerCase();
+            if (low.length >= 3 && skipWords.some(w => w === low || w.replace(/\s+/g, '') === low.replace(/\s+/g, ''))) dropItems.add(it);
+        });
+        if (dropItems.size > 0) items = items.filter(it => !dropItems.has(it));
+
         const leftItems = items.filter(it => it.transform && it.transform[4] < midX);
         const rightItems = items.filter(it => it.transform && it.transform[4] >= midX);
         const isTwoColumn = leftItems.length > 15 && rightItems.length > 15;
@@ -3354,7 +3473,7 @@ async function repairTableQuestionsViaGeminiVision(pdfFile, questions, statusEl)
             const base64Img = canvas.toDataURL('image/jpeg', 0.85).split(',')[1];
 
             const prompt = `Extract ONLY Question number(s) ${qNumsStr} from this UPSC test page image.
-Preserve exact wording. Whenever a question has a table or matching columns, format EVERY row of the table on its own line starting with [[TBL_ROW]] and separate columns with || (double pipe).
+Ignore page headers/footers, page numbers, coaching names, URLs and watermarks. Preserve exact wording. Whenever a question has a table or matching columns, format EVERY row of the table on its own line starting with [[TBL_ROW]] and separate columns with || (double pipe).
 Example:
 Consider the following pairs:
 [[TBL_ROW]] Sl. No. || Fundamental Right || Includes
@@ -3430,15 +3549,21 @@ async function processAndSaveCbtTest() {
 
     btn.disabled = true;
     try {
+        const skipWords = getCbtSkipWords(); // coaching name + user-typed words to skip
+
         if (!qRaw && selectedCbtQFile && selectedCbtQFile.type === 'application/pdf') {
             statusEl.textContent = 'Extracting Question Paper PDF...';
-            qRaw = await extractDigitalTextFromPdf(selectedCbtQFile, statusEl);
+            qRaw = await extractDigitalTextFromPdf(selectedCbtQFile, statusEl, { skipWords });
         }
 
         if (!expRaw && selectedCbtExpFile) {
             statusEl.textContent = 'Extracting Explanation Key PDF...';
-            expRaw = await extractDigitalTextFromPdf(selectedCbtExpFile, statusEl);
+            expRaw = await extractDigitalTextFromPdf(selectedCbtExpFile, statusEl, { skipWords });
         }
+
+        // Final text-level cleanup (also covers pasted text): removes header/footer/page-number lines
+        qRaw = cleanCbtText(qRaw, skipWords);
+        expRaw = cleanCbtText(expRaw, skipWords);
 
         statusEl.textContent = 'Matching questions with answers & explanations...';
         const expMap = parseCbtExplanationData(expRaw);
