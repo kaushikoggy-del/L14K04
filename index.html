@@ -1809,14 +1809,12 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
         // OFFLINE FALLBACK AUTO-TAGGER
         function fallbackRuleTagger(text, exam, year, answerKey) {
             const keysMap = parseAnswerKeys(answerKey);
-            // Start a new question only at a line number that is in the answer key (or the next number in sequence),
-            // so numbered statements inside a question ("1. ...", "2. ...") are not mistaken for new questions.
             const blocksArr = [];
             let cur = [];
             let lastQ = 0;
             const hasKeys = Object.keys(keysMap).length > 0;
             for (const line of text.split('\n')) {
-                const m = line.match(/^\s*(\d+)\s*[.)]\s+\S/);
+                const m = line.match(/^\s*(?:Q\.?\s*)?(\d+)\s*[.)]\s+\S/i);
                 if (m) {
                     const n = parseInt(m[1], 10);
                     const isNew = n > lastQ && (hasKeys ? (n in keysMap) : (lastQ === 0 || n === lastQ + 1));
@@ -1833,10 +1831,17 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
             const blocks = blocksArr.filter(b => b.trim().length > 10);
             
             return blocks.map((block, idx) => {
-                // Use the real printed question number (e.g. "24." -> 24) so the answer key matches
-                const numMatch = block.match(/^\s*(\d+)\s*[.)]\s*/);
+                const numMatch = block.match(/^\s*(?:Q\.?\s*)?(\d+)\s*[.)]\s*/i);
                 const qNum = numMatch ? parseInt(numMatch[1], 10) : idx + 1;
-                const body = block.replace(/^\s*\d+\s*[.)]\s*/, '');
+                let body = block.replace(/^\s*(?:Q\.?\s*)?\d+\s*[.)]\s*/i, '');
+
+                // Detect inline "Answer: (b)" / "Ans: B" if present in the PDF text
+                let inlineKey = null;
+                const inlineAnsMatch = body.match(/(?:^|\n|\s)(?:Ans(?:wer)?|Correct\s*(?:Option|Answer)?|Key)\s*[:\-]\s*\(?([A-Da-d])\)?[\s.]*$/i);
+                if (inlineAnsMatch) {
+                    inlineKey = inlineAnsMatch[1].toUpperCase();
+                    body = body.slice(0, inlineAnsMatch.index).trim();
+                }
 
                 // Split out options (a) (b) (c) (d) in order
                 let questionText = body.trim();
@@ -1858,7 +1863,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
 
                 // Auto Detect Subject & Micro-Theme from text keywords
                 const detected = autoDetectSubjectAndTheme(block);
-                const assignedKey = keysMap[qNum] || 'A';
+                const assignedKey = keysMap[qNum] || inlineKey || 'A';
                 const keyIdx = { A: 0, B: 1, C: 2, D: 3 }[assignedKey] ?? 0;
 
                 return {
@@ -2226,20 +2231,21 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     throw new Error(lastError);
                 }
 
-                // Compact verbatim prompt
+                // Compact verbatim prompt (supports both standard papers & inline-answer compilations)
                 const buildPrompt = (extraContent = '') => `Extract EVERY UPSC MCQ printed in this batch 100% VERBATIM as a JSON array.
 Subjects: Polity, Economics, Geography, Modern History, Environment, Int. Relations, Governance, Arts & Culture, Science & Tech, Ancient & Medieval, Miscellaneous.
 Format: [{"qNum":1,"subject":"...","theme":"...","question":"exact full text including all statements/lists","options":["A text","B text","C text","D text"],"officialKey":"A"}]
 CRITICAL RULES:
 - Do NOT skip ANY question! Extract EVERY single numbered question present in the input.
-- Copy the exact printed question number into "qNum" (integer).
+- Copy the exact printed question number into "qNum" (integer, e.g., Q98 -> 98).
 - Keep all numbered statements (1., 2., 3.) and pairs verbatim inside "question".
+- If an answer is printed or highlighted in the document (e.g., "Answer: (b)", "Ans: B", or a green-colored option), capture its uppercase letter ("A", "B", "C", or "D") in "officialKey" and DO NOT include the "Answer: (b)" line inside "question" or "options".
+- If a Subject/Sub-topic header is printed above the question (e.g., "Environment & Ecology > Biodiversity & Conservation"), map the subject to the closest Subject from the list above and copy the exact sub-topic into "theme".
 - Return ONLY a valid JSON array, no markdown or commentary.
 ${extraContent}`;
 
                 let allParsed = [];
                 const failedBatches = [];
-                // One failing batch must not throw away the whole PDF: record it and continue.
                 const safeBatch = async (parts, label, expectQs = false) => {
                     try {
                         return await runBatchExtraction(parts, label, expectQs);
@@ -2266,7 +2272,7 @@ ${extraContent}`;
                     }
 
                     const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
-                    const pagesPerBatch = isDigitalText ? 2 : 1; // digital: 2 pages/batch; scanned: 1 page (+1 overlap page) for better accuracy
+                    const pagesPerBatch = isDigitalText ? 2 : 1;
                     const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
                     let avgBatchSec = isDigitalText ? 5 : 8;
 
@@ -2279,11 +2285,9 @@ ${extraContent}`;
                         const endPage = Math.min((b + 1) * pagesPerBatch, pdfDoc.numPages);
                         const batchLabel = `Batch ${b + 1}/${totalBatches} (P.${startPage}-${endPage})`;
 
-                        // Decide per batch: a PDF can mix pages with a text layer and pages that are only images.
                         const batchHasText = pageTexts.slice(startPage - 1, endPage).every(t => t.replace(/\s+/g, '').length > 200);
 
                         if (batchHasText) {
-                            // Include tail of previous page & head of next page so questions split across page breaks are never missed
                             const prevTail = startPage > 1 ? pageTexts[startPage - 2].slice(-700) : '';
                             const nextHead = endPage < pdfDoc.numPages ? pageTexts[endPage].slice(0, 700) : '';
                             const chunkText = [
@@ -2293,14 +2297,13 @@ ${extraContent}`;
                             ].filter(Boolean).join('\n\n');
 
                             const mainText = pageTexts.slice(startPage - 1, endPage).join(' ');
-                            const expectQs = (mainText.match(/(?:^|\s)\d{1,3}\s*[.)]\s+\S/g) || []).length >= 3;
+                            const expectQs = (mainText.match(/(?:^|\s)(?:Q\.?\s*)?\d{1,3}\s*[.)]\s+\S/gi) || []).length >= 3;
                             const resItems = await safeBatch([{ text: buildPrompt(chunkText) }], batchLabel, expectQs);
                             console.log(`[PYQ import] ${batchLabel}: ${resItems.length} questions (expectQs=${expectQs})`);
                             allParsed.push(...resItems);
                         } else {
                             currentStatusPrefix = `Rendering ${batchLabel}`;
                             const imgParts = [{ text: buildPrompt() }];
-                            // Overlap 1 page on scans if a question spans a page break
                             const scanEnd = endPage < pdfDoc.numPages ? endPage + 1 : endPage;
                             for (let p = startPage; p <= scanEnd; p++) {
                                 const page = await pdfDoc.getPage(p);
@@ -2347,25 +2350,24 @@ ${extraContent}`;
                     alert(`Warning: ${failedBatches.length} batch(es) failed and were skipped:\n\n${failedBatches.join('\n')}\n\nCheck the preview and re-upload those pages if questions are missing.`);
                 }
 
-                // 5. Deduplicate by valid qNum & FORCE-LOCK official answer keys deterministically in JS
+                // 5. Deduplicate by valid qNum & lock official answer keys (Section 3 overrides if provided; otherwise uses inline PDF key)
                 const seen = new Set();
                 const seenSigs = new Set();
                 const ignoredItems = [];
                 const noKeyNums = [];
                 const finalized = [];
+                const hasManualKeyMap = Object.keys(keyMap).length > 0;
+
                 for (let idx = 0; idx < allParsed.length; idx++) {
                     const item = allParsed[idx];
-                    const parsedNum = parseInt(item.qNum, 10);
+                    const parsedNum = parseInt(String(item.qNum ?? '').replace(/^Q\.?\s*/i, ''), 10);
                     const qNum = (!isNaN(parsedNum) && parsedNum > 0) ? parsedNum : (idx + 1000);
                     if (seen.has(qNum)) continue;
 
-                    // With an answer key, only accept question numbers that are in the key (drops misread/extra items)
-                    // (only when the key is a full paper key; a short/partial key must not delete real questions)
                     if (Object.keys(keyMap).length >= 40 && !(qNum in keyMap)) {
                         ignoredItems.push(qNum >= 1000 ? '?' : qNum);
                         continue;
                     }
-                    // Drop the same question read twice under different numbers (page-overlap duplicates)
                     const sig = String(item.question || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 200) + '|' + (Array.isArray(item.options) ? item.options.join('|').toLowerCase().slice(0, 100) : '');
                     if (seenSigs.has(sig)) {
                         ignoredItems.push(`dup of Q${qNum}`);
@@ -2373,12 +2375,22 @@ ${extraContent}`;
                     }
                     seenSigs.add(sig);
                     seen.add(qNum);
-                    if (Object.keys(keyMap).length > 0 && !(qNum in keyMap)) noKeyNums.push(qNum >= 1000 ? '?' : qNum);
 
-                    const lockedKey = keyMap[qNum] || (item.officialKey || 'A').toUpperCase().trim().charAt(0);
+                    // Clean inline "Answer: (b)" if AI left any residual line at the end of question/options
+                    let cleanQuestion = String(item.question || '').replace(/\n?\s*(?:Ans(?:wer)?|Correct\s*(?:Option|Answer)?|Key)\s*[:\-]\s*\(?[A-Da-d]\)?[\s.]*$/i, '').trim();
+                    const rawInlineKey = String(item.officialKey || '').replace(/[^A-Da-d]/g, '').toUpperCase().charAt(0);
+
+                    if (hasManualKeyMap && !(qNum in keyMap) && !rawInlineKey) {
+                        noKeyNums.push(qNum >= 1000 ? '?' : qNum);
+                    }
+
+                    const lockedKey = keyMap[qNum] || rawInlineKey || 'A';
                     const optIndex = { A: 0, B: 1, C: 2, D: 3 }[lockedKey] ?? 0;
                     const cleanOptions = Array.isArray(item.options) && item.options.length === 4
-                        ? item.options.map(o => String(o).replace(/^\(?[a-dA-D]\)?[.)]\s*/, '').trim())
+                        ? item.options.map(o => String(o)
+                            .replace(/^\(?[a-dA-D]\)?[.)]\s*/, '')
+                            .replace(/\s*(?:Ans(?:wer)?|Correct\s*(?:Option|Answer)?|Key)\s*[:\-]\s*\(?[A-Da-d]\)?[\s.]*$/i, '')
+                            .trim())
                         : ["Option A", "Option B", "Option C", "Option D"];
 
                     finalized.push({
@@ -2387,7 +2399,7 @@ ${extraContent}`;
                         year: parseInt(year, 10) || year,
                         subject: item.subject || 'Miscellaneous',
                         theme: item.theme || 'General',
-                        question: item.question || '',
+                        question: cleanQuestion,
                         options: cleanOptions,
                         correctAnswer: cleanOptions[optIndex] || cleanOptions[0],
                         officialKey: lockedKey,
@@ -2405,7 +2417,6 @@ ${extraContent}`;
                     alert(`${noKeyNums.length} question(s) are NOT in your answer key, so their Key is only an AI guess: ${noKeyNums.slice(0, 40).join(', ')}${noKeyNums.length > 40 ? ', ...' : ''}\n\nPaste the full answer key and run again, or fix the Key box in the preview before saving.`);
                 }
 
-                // Tell the user which numbers from the answer key were NOT extracted
                 const expectedNums = Object.keys(keyMap).map(Number);
                 if (expectedNums.length > 0) {
                     const missing = expectedNums.filter(n => !seen.has(n)).sort((a, b) => a - b);
