@@ -2176,7 +2176,7 @@ ${extraContent}`;
                     }
 
                     const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
-                    const pagesPerBatch = 2; // Strictly 2 pages per batch (~8-10 Qs) so output tokens never truncate
+                    const pagesPerBatch = isDigitalText ? 2 : 1; // digital: 2 pages/batch; scanned: 1 page (+1 overlap page) for better accuracy
                     const totalBatches = Math.ceil(pdfDoc.numPages / pagesPerBatch);
                     let avgBatchSec = isDigitalText ? 5 : 8;
 
@@ -2218,7 +2218,7 @@ ${extraContent}`;
                                 const ctx = canvas.getContext('2d');
                                 ctx.filter = 'grayscale(100%) contrast(130%)';
                                 await page.render({ canvasContext: ctx, viewport }).promise;
-                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.65).split(',')[1];
+                                const jpegB64 = canvas.toDataURL('image/jpeg', 0.8).split(',')[1];
                                 imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
                             }
                             const resItems = await safeBatch(imgParts, batchLabel);
