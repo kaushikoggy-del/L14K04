@@ -2036,7 +2036,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         const hasImages = batchParts.some(p => p.inlineData);
                         const groqModels = hasImages
     ? ['llama-3.2-11b-vision-preview', 'llama-3.2-90b-vision-preview']
-    : ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+    : ['llama-3.3-70b-versatile', 'meta-llama/llama-4-scout-17b-16e-instruct'];
                         for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
                             const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
                             const activeKey = groqKeys[keyIdx];
