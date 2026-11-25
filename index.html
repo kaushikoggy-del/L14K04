@@ -1968,7 +1968,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         if (res.ok && Array.isArray(data.data)) {
                             const valid = data.data
                                 .map(m => m.id)
-                                .filter(id => !/whisper|tts|guard|safeguard|embed|vision/i.test(id));
+                                .filter(id => !/whisper|tts|guard|safeguard|embed|vision|allam/i.test(id));
                             valid.sort((a, b) => {
                                 const score = s => (/70b|120b|90b/i.test(s) ? 0 : /32b|17b|8b/i.test(s) ? 5 : 10);
                                 return score(a) - score(b);
@@ -2073,7 +2073,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             model: gModel,
                                             messages: toOpenAIMessages(batchParts),
                                             temperature: 0.0,
-                                            max_tokens: 8192
+                                            max_tokens: 4096
                                         })
                                     }, 90000);
                                     const data = await res.json();
