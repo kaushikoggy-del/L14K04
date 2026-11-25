@@ -2432,6 +2432,11 @@ ${extraContent}`;
 
         function saveVerifiedImport() {
             if (currentVerificationList.length === 0) return;
+            // Re-importing the same exam/year/question replaces the old copy instead of creating a duplicate
+            const newIds = new Set(currentVerificationList.map(q => q.id));
+            const beforeCount = pyqDatabase.length;
+            pyqDatabase = pyqDatabase.filter(q => !newIds.has(q.id));
+            const replacedCount = beforeCount - pyqDatabase.length;
             pyqDatabase.unshift(...currentVerificationList);
             saveDatabase();
             localStorage.setItem('lastAddedBatchCount', currentVerificationList.length);
@@ -2440,7 +2445,7 @@ updateUndoButtonUI();
             document.getElementById('import-verification-area').classList.add('hidden');
             document.getElementById('import-raw-text').value = '';
             document.getElementById('import-answer-key').value = '';
-            alert(`Successfully added ${currentVerificationList.length} verified questions to your database!`);
+            alert(`Successfully added ${currentVerificationList.length} verified questions to your database!` + (replacedCount > 0 ? `\n(${replacedCount} older copies of the same questions were replaced, no duplicates created.)` : ''));
             switchTab('explorer');
         }
 
