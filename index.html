@@ -1893,11 +1893,13 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                 const extractJsonArray = (rawStr) => {
                     if (!rawStr) return null;
                     const cleaned = rawStr.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+                    // A valid empty array means "no MCQs on these pages" (e.g. instructions / answer-key page) — not an error.
+                    if (/^\[\s*\]$/.test(cleaned)) return [];
                     const match = cleaned.match(/\[\s*\{[\s\S]*\}\s*\]/);
                     if (!match) return null;
                     try {
                         const parsed = JSON.parse(match[0]);
-                        return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+                        return Array.isArray(parsed) ? parsed : null;
                     } catch (_) {
                         return null;
                     }
@@ -1968,7 +1970,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         if (res.ok && Array.isArray(data.data)) {
                             const valid = data.data
                                 .map(m => m.id)
-                                .filter(id => !/whisper|tts|guard|safeguard|embed|vision|allam/i.test(id));
+                                .filter(id => !/whisper|tts|guard|safeguard|embed|vision|allam|orpheus|canopylabs|playai|compound/i.test(id));
                             valid.sort((a, b) => {
                                 const score = s => (/70b|120b|90b/i.test(s) ? 0 : /32b|17b|8b/i.test(s) ? 5 : 10);
                                 return score(a) - score(b);
@@ -2144,6 +2146,16 @@ CRITICAL RULES:
 ${extraContent}`;
 
                 let allParsed = [];
+                const failedBatches = [];
+                // One failing batch must not throw away the whole PDF: record it and continue.
+                const safeBatch = async (parts, label) => {
+                    try {
+                        return await runBatchExtraction(parts, label);
+                    } catch (e) {
+                        failedBatches.push(`${label}: ${e.message}`);
+                        return [];
+                    }
+                };
 
                 // 4. Micro-batched PDF processing (2 pages per call with boundary overlap so zero questions are cut off or truncated)
                 if (fileObj && (fileObj.type === 'application/pdf' || fileObj.name.toLowerCase().endsWith('.pdf')) && window.pdfjsLib) {
@@ -2185,7 +2197,7 @@ ${extraContent}`;
                                 nextHead ? `[CONTEXT FROM NEXT PAGE START]:\n${nextHead}` : ''
                             ].filter(Boolean).join('\n\n');
 
-                            const resItems = await runBatchExtraction([{ text: buildPrompt(chunkText) }], batchLabel);
+                            const resItems = await safeBatch([{ text: buildPrompt(chunkText) }], batchLabel);
                             allParsed.push(...resItems);
                         } else {
                             currentStatusPrefix = `Rendering ${batchLabel}`;
@@ -2204,7 +2216,7 @@ ${extraContent}`;
                                 const jpegB64 = canvas.toDataURL('image/jpeg', 0.65).split(',')[1];
                                 imgParts.push({ inlineData: { mimeType: 'image/jpeg', data: jpegB64 } });
                             }
-                            const resItems = await runBatchExtraction(imgParts, batchLabel);
+                            const resItems = await safeBatch(imgParts, batchLabel);
                             allParsed.push(...resItems);
                         }
 
@@ -2230,6 +2242,11 @@ ${extraContent}`;
                         parts.push({ inlineData: { mimeType: fileObj.type || 'image/jpeg', data: base64Data } });
                     }
                     allParsed = await runBatchExtraction(parts, 'Extracting Questions');
+                }
+
+                if (failedBatches.length > 0) {
+                    if (allParsed.length === 0) throw new Error(failedBatches[0]);
+                    alert(`Warning: ${failedBatches.length} batch(es) failed and were skipped:\n\n${failedBatches.join('\n')}\n\nCheck the preview and re-upload those pages if questions are missing.`);
                 }
 
                 // 5. Deduplicate by valid qNum & FORCE-LOCK official answer keys deterministically in JS
