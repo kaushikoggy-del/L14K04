@@ -1933,6 +1933,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                 // 3. Self-Healing Sticky Single-Key + Input-Aware Multi-Provider Router
                 let activeGeminiKeyIdx = 0;
                 let cachedGeminiModels = null;
+                let cachedGroqModels = null;
 
                 async function getLiveGeminiModels(apiKey) {
                     if (cachedGeminiModels && cachedGeminiModels.length > 0) return cachedGeminiModels;
@@ -1943,8 +1944,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                             const valid = data.models
                                 .filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
                                 .map(m => m.name.replace(/^models\//, ''))
-                                .filter(name => /flash/i.test(name) && !/tts|audio|image|robotics|computer|custom|embedding|aqa/i.test(name));
-                            // Prefer lite/standard flash models first for speed & higher free quota
+                                .filter(name => /flash/i.test(name) && !/tts|audio|image|robotics|computer|custom|embedding|aqa|exp/i.test(name));
                             valid.sort((a, b) => {
                                 const score = s => (/lite/i.test(s) ? 0 : 10) + (/latest/i.test(s) ? 5 : 0);
                                 return score(a) - score(b);
@@ -1955,7 +1955,31 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                             }
                         }
                     } catch (_) {}
-                    return ['gemini-2.5-flash-lite', 'gemini-2.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+                    return ['gemini-3.5-flash-lite', 'gemini-3.8-flash'];
+                }
+
+                async function getLiveGroqModels(apiKey) {
+                    if (cachedGroqModels && cachedGroqModels.length > 0) return cachedGroqModels;
+                    try {
+                        const res = await fetchWithTimeout('https://api.groq.com/openai/v1/models', {
+                            headers: { 'Authorization': `Bearer ${apiKey}` }
+                        }, 15000);
+                        const data = await res.json();
+                        if (res.ok && Array.isArray(data.data)) {
+                            const valid = data.data
+                                .map(m => m.id)
+                                .filter(id => !/whisper|tts|guard|safeguard|embed|vision/i.test(id));
+                            valid.sort((a, b) => {
+                                const score = s => (/70b|120b|90b/i.test(s) ? 0 : /32b|17b|8b/i.test(s) ? 5 : 10);
+                                return score(a) - score(b);
+                            });
+                            if (valid.length > 0) {
+                                cachedGroqModels = valid.slice(0, 3);
+                                return cachedGroqModels;
+                            }
+                        }
+                    } catch (_) {}
+                    return ['llama3-70b-8192', 'mixtral-8x7b-32768'];
                 }
 
                 async function runBatchExtraction(batchParts, label) {
@@ -1986,7 +2010,11 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                             headers: { 'Content-Type': 'application/json' },
                                             body: JSON.stringify({
                                                 contents: [{ role: 'user', parts: batchParts }],
-                                                generationConfig: { maxOutputTokens: 16384, temperature: 0.0 }
+                                                generationConfig: {
+                                                    maxOutputTokens: 16384,
+                                                    temperature: 0.0,
+                                                    responseMimeType: "application/json"
+                                                }
                                             })
                                         }, 90000);
                                         data = await res.json().catch(() => ({}));
@@ -2007,9 +2035,10 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                         continue;
                                     }
 
-                                    const parsed = extractJsonArray(data.candidates?.[0]?.content?.parts?.[0]?.text);
+                                    const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                                    const parsed = extractJsonArray(rawText);
                                     if (parsed) return parsed;
-                                    geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output`;
+                                    geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): Non-JSON output (${rawText.slice(0, 60)}...)`;
                                     lastError = geminiError;
                                 } catch (err) {
                                     geminiError = `Gemini Key #${keyIdx + 1} (${cleanModel}): ${err.name === 'AbortError' ? 'Timed out (90s)' : err.message}`;
@@ -2025,78 +2054,10 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         }
                     }
 
-                    // B. Failover to Groq (Text-only batches; Groq free tier does not process PDF images)
+                    // B. Failover to Groq with Dynamic Model Discovery (Text-only batches)
                     if (groqKeys.length > 0 && !hasImages) {
-                        for (let kOffset = 0; kOffset < groqKeys.length; kOffset++) {
-                            const keyIdx = (currentBatchIdx + kOffset) % groqKeys.length;
-                            const activeKey = groqKeys[keyIdx];
-                            currentStatusPrefix = `${label} • Groq #${keyIdx + 1} (llama-3.3-70b-versatile)`;
-                            try {
-                                const res = await fetchWithTimeout('https://api.groq.com/openai/v1/chat/completions', {
-                                    method: 'POST',
-                                    headers: {
-                                        'Content-Type': 'application/json',
-                                        'Authorization': `Bearer ${activeKey}`
-                                    },
-                                    body: JSON.stringify({
-                                        model: 'llama-3.3-70b-versatile',
-                                        messages: toOpenAIMessages(batchParts),
-                                        temperature: 0.0,
-                                        max_tokens: 8192
-                                    })
-                                }, 90000);
-                                const data = await res.json();
-                                if (!res.ok || data.error) {
-                                    lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
-                                    continue;
-                                }
-                                const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
-                                if (parsed) return parsed;
-                            } catch (err) {
-                                lastError = (geminiError ? geminiError + ' | ' : '') + `Groq #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (90s)' : err.message}`;
-                            }
-                        }
-                    }
-
-                    // C. Automatic Failover to OpenRouter (sk-or- keys) with 15s timeout so ISP blocks never hang
-                    if (openRouterKeys.length > 0) {
-                        const orModels = ['openrouter/free', 'google/gemini-2.0-flash', 'openai/gpt-4o-mini'];
-                        for (let kOffset = 0; kOffset < openRouterKeys.length; kOffset++) {
-                            const keyIdx = (currentBatchIdx + kOffset) % openRouterKeys.length;
-                            const activeKey = openRouterKeys[keyIdx];
-                            for (const orModel of orModels) {
-                                currentStatusPrefix = `${label} • OpenRouter #${keyIdx + 1} (${orModel.split('/').pop()})`;
-                                try {
-                                    const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
-                                        method: 'POST',
-                                        headers: {
-                                            'Content-Type': 'application/json',
-                                            'Authorization': `Bearer ${activeKey}`,
-                                            'HTTP-Referer': window.location.origin,
-                                            'X-Title': 'UPSC PYQ Analytics'
-                                        },
-                                        body: JSON.stringify({
-                                            model: orModel,
-                                            messages: toOpenAIMessages(batchParts),
-                                            temperature: 0.0
-                                        })
-                                    }, 15000);
-                                    const data = await res.json();
-                                    if (!res.ok || data.error) {
-                                        lastError = `OpenRouter #${keyIdx + 1}: ${data.error?.message || `HTTP ${res.status}`}`;
-                                        continue;
-                                    }
-                                    const parsed = extractJsonArray(data.choices?.[0]?.message?.content);
-                                    if (parsed) return parsed;
-                                } catch (err) {
-                                    lastError = `OpenRouter #${keyIdx + 1}: ${err.name === 'AbortError' ? 'Timed out (15s)' : err.message}`;
-                                }
-                            }
-                        }
-                    }
-
-                    throw new Error(lastError);
-                }
+                        const groqModels = await getLiveGroqModels(groqKeys[0]);
+                        for (
 
                 // Compact verbatim prompt
                 const buildPrompt = (extraContent = '') => `Extract EVERY UPSC MCQ printed in this batch 100% VERBATIM as a JSON array.
