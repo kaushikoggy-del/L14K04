@@ -2481,7 +2481,8 @@ ${extraContent}`;
                         ignoredItems.push(qNum >= 1000 ? '?' : qNum);
                         continue;
                     }
-                    const sig = String(item.question || '').replace(/\s+/g, ' ').trim().toLowerCase().slice(0, 200) + '|' + (Array.isArray(item.options) ? item.options.join('|').toLowerCase().slice(0, 100) : '');
+                    // Same-paper duplicate check only (this upload = one year). Uses the FULL question + options, so similar-looking statement questions are not mistaken for duplicates. Questions that also exist in other years are never touched.
+                    const sig = String(item.question || '').replace(/\s+/g, ' ').trim().toLowerCase() + '|' + (Array.isArray(item.options) ? item.options.map(o => String(o).replace(/\s+/g, ' ').trim().toLowerCase()).join('|') : '');
                     if (seenSigs.has(sig)) {
                         ignoredItems.push(`dup of Q${qNum}`);
                         continue;
