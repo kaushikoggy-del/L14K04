@@ -436,6 +436,7 @@
             <!-- Active Filter Count & Status Bar -->
             <div class="flex items-center justify-between px-1 font-sans text-xs text-gray-400">
                 <div>Showing <span id="results-count" class="font-bold text-amber-400">10</span> questions matching active criteria</div>
+                <button id="btn-delete-shown" onclick="confirmDeleteShown()" class="hidden text-rose-400 hover:underline items-center gap-1"><i class="fa-solid fa-trash-can"></i> <span id="btn-delete-shown-label">Delete all shown</span></button>
                 <button onclick="resetAllFilters()" class="text-amber-400 hover:underline flex items-center gap-1">
                     <i class="fa-solid fa-rotate-left"></i> Reset Filters
                 </button>
@@ -1613,6 +1614,14 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
             });
 
             document.getElementById('results-count').textContent = filtered.length;
+            window._lastFilteredIds = filtered.map(q => q.id);
+            const _del = document.getElementById('btn-delete-shown');
+            if (_del) {
+                const narrowed = (examFilter !== 'ALL' || yearFilter !== 'ALL' || subFilter !== 'ALL' || themeFilter !== 'ALL' || pcsFilter !== 'ALL' || searchKeyword) && filtered.length > 0 && filtered.length < pyqDatabase.length;
+                _del.classList.toggle('hidden', !narrowed);
+                _del.style.display = narrowed ? 'flex' : '';
+                document.getElementById('btn-delete-shown-label').textContent = `Delete all ${filtered.length} shown`;
+            }
             renderPYQList(filtered);
         }
 
@@ -1773,6 +1782,40 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
         function toggleAnalysis(id) {
             const el = document.getElementById(`analysis-${id}`);
             el.classList.toggle('hidden');
+        }
+
+        function confirmDeleteShown() {
+            const ids = (window._lastFilteredIds || []).slice();
+            if (!ids.length) return;
+            const parts = [];
+            const ex = document.getElementById('filter-exam').value, yr = document.getElementById('filter-year').value, sb = document.getElementById('filter-subject').value, th = document.getElementById('filter-theme').value;
+            if (ex !== 'ALL') parts.push(ex); if (yr !== 'ALL') parts.push(yr); if (sb !== 'ALL') parts.push(sb); if (th !== 'ALL') parts.push(th);
+            const what = parts.length ? parts.join(' / ') : 'the current search';
+            showPopup({ title: `Delete ${ids.length} questions?`, type: 'warn', html:
+                `<div>You are about to delete <b>all ${ids.length} questions currently shown</b> (${_escH(what)}). Their saved explanations will be deleted too.</div>
+                 <div class="text-rose-300"><b>This cannot be undone.</b> Download a backup first if you are not sure.</div>
+                 <div class="flex flex-wrap gap-2">
+                   <button type="button" id="del-backup" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-download"></i> Download backup first</button>
+                   <button type="button" id="del-yes" class="px-3 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-trash-can"></i> Yes, delete ${ids.length}</button>
+                   <button type="button" id="del-no" class="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-xs font-bold">Cancel</button>
+                 </div>`,
+                onOpen: (body, close) => {
+                    body.querySelector('#del-no').onclick = close;
+                    body.querySelector('#del-backup').onclick = () => {
+                        const blob = new Blob([JSON.stringify(pyqDatabase, null, 2)], { type: 'application/json' });
+                        const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
+                        a.download = `UPSC_PYQ_Database_Backup_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+                    };
+                    body.querySelector('#del-yes').onclick = () => {
+                        const set = new Set(ids);
+                        pyqDatabase = pyqDatabase.filter(q => !set.has(q.id));
+                        saveDatabase();
+                        if (window.explDeleteMany) window.explDeleteMany(ids);
+                        resetAllFilters();
+                        close();
+                        setTimeout(() => showPopup({ title: 'Deleted', type: 'ok', html: `<div>${ids.length} questions were deleted from your database.</div>` }), 50);
+                    };
+                } });
         }
 
         function deleteQuestion(id) {
@@ -4270,6 +4313,12 @@ function confirmSubmitCbt() {
               <button type="button" onclick="document.getElementById('expl-import-input').click()" class="text-gray-400 hover:underline">Import</button>
             </span>`;
     }
+    window.explDeleteMany = function (ids) {
+        ids.forEach(id => { delete explMap[id]; });
+        if (!idb) return;
+        try { const tx = idb.transaction('e', 'readwrite'); const st = tx.objectStore('e'); ids.forEach(id => st.delete(id)); } catch (e) {}
+        updateBar();
+    };
     window.explTogglePause = function () { try { localStorage.setItem('expl_paused', isPaused() ? '0' : '1'); } catch (e) {} updateBar(); if (!isPaused()) kick(500); };
     window.explExport = function () {
         const blob = new Blob([JSON.stringify(Object.values(explMap))], { type: 'application/json' });
