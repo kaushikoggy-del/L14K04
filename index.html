@@ -2527,6 +2527,7 @@ ${extraContent}`;
             wrap.addEventListener('mousedown', e => { if (e.target === wrap) close(); });
             document.body.appendChild(wrap);
             wrap.querySelector('#app-popup-close').onclick = close;
+            setTimeout(() => { const d = wrap.firstElementChild; if (wrap.isConnected && d && d.offsetHeight < 20) { wrap.remove(); document.removeEventListener('keydown', onKey, true); _popupOpen = false; _popupQueue.length = 0; console.error('popup failed to render'); } }, 400);
             if (o.onOpen) { try { o.onOpen(wrap.querySelector('#app-popup-body'), close); } catch (e) { console.error(e); } }
         }
         // Turn technical errors into plain language
@@ -2733,8 +2734,10 @@ updateUndoButtonUI();
             document.getElementById('import-verification-area').classList.add('hidden');
             document.getElementById('import-raw-text').value = '';
             document.getElementById('import-answer-key').value = '';
-            alert(`Successfully added ${currentVerificationList.length} verified questions to your database!` + (replacedCount > 0 ? `\n(${replacedCount} older copies of the same questions were replaced, no duplicates created.)` : ''));
-            switchTab('explorer');
+            const _addedN = currentVerificationList.length;
+            currentVerificationList = [];
+            refreshMissedButton([]);
+            setTimeout(() => showPopup({ title: 'Saved to database', type: 'ok', html: `<div>Successfully added <b>${_addedN}</b> question${_addedN > 1 ? 's' : ''} to your database.</div>` + (replacedCount > 0 ? `<div class="text-xs text-gray-400">${replacedCount} older cop${replacedCount > 1 ? 'ies' : 'y'} of the same questions were replaced, so no duplicates were created.</div>` : '') }), 50);
         }
 
 
