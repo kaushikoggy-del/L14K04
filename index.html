@@ -4352,7 +4352,7 @@ If reliable sources clearly disagree with the official key, add a last line star
                     try { const out = await callOnce(key, model, q, useSearch); keyIdx = (keyIdx + k) % keys.length; out.model = model; return out; }
                     catch (e) { last = e; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
                 }
-                if (last && (last.kind === 'quota' || last.kind === 'key')) break;
+                if (last && last.kind === 'key') break;
             }
         }
         if (last && last.kind === 'quota') keyIdx = (keyIdx + 1) % keys.length;
@@ -4381,7 +4381,7 @@ If reliable sources clearly disagree with the official key, add a last line star
                 lastMsg = 'Working in the background'; updateBar();
             } catch (e) {
                 consecutiveErrors++;
-                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min`; }
+                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 110)})`; }
                 else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check your keys in Settings'; }
                 else { failCount[q.id] = (failCount[q.id] || 0) + 1; if (failCount[q.id] >= 3) skip.add(q.id); lastMsg = 'Last try failed (' + explainError(e.message).why + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
                 console.warn('[explanations]', e.message);
