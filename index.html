@@ -537,9 +537,14 @@
                         <h3 class="text-sm font-bold text-amber-400 flex items-center gap-2">
                             <i class="fa-solid fa-list-check"></i> Verification Preview (<span id="parsed-count">0</span> Questions Parsed)
                         </h3>
+                        <div class="flex items-center gap-2 flex-wrap justify-end">
+                        <button id="btn-check-missed" onclick="openMissedPopup()" class="px-4 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow">
+                            <i class="fa-solid fa-magnifying-glass"></i> <span id="btn-check-missed-label">Check Missed Questions</span>
+                        </button>
                         <button onclick="saveVerifiedImport()" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold transition flex items-center gap-2 shadow">
                             <i class="fa-solid fa-floppy-disk"></i> Save All to Database
                         </button>
+                        </div>
                     </div>
 
                     <div id="missing-questions-banner" class="hidden rounded-xl border px-4 py-3 text-xs"></div>
@@ -1820,6 +1825,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
             btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Processing AI Analysis...';
 
             let parsedQuestions = [];
+            window.lastImportReport = { failed: [], ignored: [], noKey: [], source: rawText || '' };
 
             if (apiKey) {
                 // Call Gemini Vision API
@@ -1835,13 +1841,14 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                 btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin"></i> Offline OCR reading image... ${pct}%`;
                             });
                             parsedQuestions = fallbackRuleTagger(ocrText, examName, examYear, answerKeyRaw);
-                            alert('Gemini could not read this image (' + err.message.slice(0, 120) + '...).\n\nThe text was read with offline OCR instead. OCR can make small mistakes, so please check the question, options and key in the preview before saving.');
+                            lastImportReport.source += '\n' + ocrText;
+                            showPopup({ title: 'Gemini could not read the image', type: 'warn', html: `<div><b>What happened:</b> ${_escH(explainError(err.message).why)}</div><div>The text was read with the site's own offline reader (OCR) instead. OCR can make small mistakes, so please check the question, options and key in the preview before saving.</div>` });
                         } catch (ocrErr) {
-                            alert('Gemini API Error: ' + err.message + '\n\nOffline OCR also failed: ' + ocrErr.message + '\n\nPlease paste the question text instead.');
+                            showErrorPopup('Could not read the image', err.message + ' | OCR: ' + ocrErr.message, '<div><b>Tip:</b> paste the question text instead.</div>');
                             parsedQuestions = [];
                         }
                     } else {
-                        alert('Gemini API Error: ' + err.message + '. Falling back to Offline Rule Auto-Tagger.');
+                        showErrorPopup('Gemini could not finish', err.message, '<div>The site used its basic offline reader instead, so results may be less accurate.</div>');
                         parsedQuestions = fallbackRuleTagger(rawText, examName, examYear, answerKeyRaw);
                     }
                 }
@@ -1856,7 +1863,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
             if (parsedQuestions.length > 0) {
                 renderVerificationPreview(parsedQuestions);
             } else {
-                alert('No valid questions parsed. Please check text or upload format.');
+                showPopup({ title: 'No questions found', type: 'error', html: '<div><b>What happened:</b> The site could not find any question in what you gave it.</div><div><b>What to do:</b> Check that the text/file really contains numbered questions with options (a) (b) (c) (d), then try again.</div>' });
             }
         }
 
@@ -2327,6 +2334,7 @@ ${extraContent}`;
                         pageTexts.push(pStr);
                         fullText += pStr;
                     }
+                    if (fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120)) lastImportReport.source += '\n' + pageTexts.join('\n');
 
                     const isDigitalText = fullText.replace(/\s+/g, '').length > (pdfDoc.numPages * 120);
                     const pagesPerBatch = isDigitalText ? 2 : 1;
@@ -2404,7 +2412,7 @@ ${extraContent}`;
 
                 if (failedBatches.length > 0) {
                     if (allParsed.length === 0) throw new Error(failedBatches[0]);
-                    alert(`Warning: ${failedBatches.length} batch(es) failed and were skipped:\n\n${failedBatches.join('\n')}\n\nCheck the preview and re-upload those pages if questions are missing.`);
+                    lastImportReport.failed = failedBatches.slice();
                 }
 
                 // 5. Deduplicate by valid qNum & lock official answer keys (Section 3 overrides if provided; otherwise uses inline PDF key)
@@ -2467,19 +2475,15 @@ ${extraContent}`;
 
                 if (ignoredItems.length > 0) {
                     console.log('[PYQ import] Ignored extra items:', ignoredItems);
-                    alert(`Ignored ${ignoredItems.length} extra/duplicate item(s) the AI returned that do not match your answer key: ${ignoredItems.join(', ')}`);
+                    lastImportReport.ignored = ignoredItems.slice();
                 }
 
                 if (noKeyNums.length > 0) {
-                    alert(`${noKeyNums.length} question(s) are NOT in your answer key, so their Key is only an AI guess: ${noKeyNums.slice(0, 40).join(', ')}${noKeyNums.length > 40 ? ', ...' : ''}\n\nPaste the full answer key and run again, or fix the Key box in the preview before saving.`);
+                    lastImportReport.noKey = noKeyNums.slice();
                 }
 
                 const expectedNums = Object.keys(keyMap).map(Number);
                 if (expectedNums.length > 0) {
-                    const missing = expectedNums.filter(n => !seen.has(n)).sort((a, b) => a - b);
-                    if (missing.length > 0) {
-                        alert(`Extracted ${finalized.length} of ${expectedNums.length} questions (per your answer key).\n\nMissing Q numbers: ${missing.join(', ')}\n\nTip: upload only the pages containing those questions and run again.`);
-                    }
                 }
 
                 finalized.sort((a, b) => parseInt(a.id.split('_').pop(), 10) - parseInt(b.id.split('_').pop(), 10));
@@ -2491,58 +2495,155 @@ ${extraContent}`;
         // VERIFICATION PREVIEW TABLE
         let currentVerificationList = [];
 
-        // Shows (and keeps visible) which question numbers are missing from the parsed list.
-        // Expected numbers = answer-key numbers + 1..Total (if typed) + every gap between 1 and the highest number found.
-        function updateMissingBanner(list) {
-            const banner = document.getElementById('missing-questions-banner');
-            if (!banner) return;
-            const found = new Set();
-            const unnumbered = [];
+        // ===== IN-SITE POPUP SYSTEM (replaces browser alerts; close button top-right, Esc, click outside) =====
+        window.lastImportReport = window.lastImportReport || { failed: [], ignored: [], noKey: [], source: '' };
+        const _popupQueue = [];
+        let _popupOpen = false;
+        function _escH(s) { return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+        function showPopup(opts) {
+            _popupQueue.push(opts || {});
+            if (!_popupOpen) _nextPopup();
+        }
+        function _nextPopup() {
+            const o = _popupQueue.shift();
+            if (!o) { _popupOpen = false; return; }
+            _popupOpen = true;
+            const colors = { error: 'text-red-300 border-red-500/60', warn: 'text-amber-300 border-amber-500/60', ok: 'text-emerald-300 border-emerald-500/60', info: 'text-sky-300 border-sky-500/60' };
+            const icons = { error: 'fa-circle-xmark', warn: 'fa-triangle-exclamation', ok: 'fa-circle-check', info: 'fa-circle-info' };
+            const t = colors[o.type] ? o.type : 'info';
+            const wrap = document.createElement('div');
+            wrap.id = 'app-popup-overlay';
+            wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:rgba(0,0,0,.65);display:flex;align-items:center;justify-content:center;padding:16px;';
+            wrap.innerHTML = `<div role="dialog" aria-modal="true" class="bg-gray-900 border ${colors[t].split(' ')[1]} rounded-xl shadow-2xl w-full max-w-xl text-gray-200" style="max-height:85vh;display:flex;flex-direction:column;background:#111827;width:100%;max-width:36rem;border-radius:12px;border:1px solid #4b5563;color:#e5e7eb;">
+                <div class="flex items-center justify-between px-4 py-2 border-b border-gray-700 bg-gray-800/80 rounded-t-xl" style="display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:#1f2937;border-radius:12px 12px 0 0;">
+                    <div class="font-bold text-sm flex items-center gap-2 ${colors[t].split(' ')[0]}"><i class="fa-solid ${icons[t]}"></i> ${_escH(o.title || 'Notice')}</div>
+                    <button type="button" id="app-popup-close" title="Close" aria-label="Close" style="width:28px;height:28px;border-radius:6px;line-height:26px;font-size:18px;" class="text-gray-300 hover:bg-red-600 hover:text-white transition" onmouseover="this.style.background='#dc2626'" onmouseout="this.style.background='transparent'">&times;</button>
+                </div>
+                <div id="app-popup-body" class="p-4 text-sm space-y-3 overflow-y-auto" style="word-break:break-word;padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:12px;">${o.html || ''}</div>
+            </div>`;
+            const close = () => { document.removeEventListener('keydown', onKey, true); wrap.remove(); _nextPopup(); };
+            const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+            document.addEventListener('keydown', onKey, true);
+            wrap.addEventListener('mousedown', e => { if (e.target === wrap) close(); });
+            document.body.appendChild(wrap);
+            wrap.querySelector('#app-popup-close').onclick = close;
+            if (o.onOpen) { try { o.onOpen(wrap.querySelector('#app-popup-body'), close); } catch (e) { console.error(e); } }
+        }
+        // Turn technical errors into plain language
+        function explainError(raw) {
+            const s = String(raw || '');
+            const l = s.toLowerCase();
+            let why = 'Something unexpected went wrong.', fix = 'Please try again. If it keeps happening, take a screenshot of this box and share it.';
+            if (/recitation|copyright/.test(l)) { why = 'Gemini refused to copy this text word-for-word because it looks like copyrighted material (a safety filter).'; fix = 'Try again, upload fewer pages at a time, or paste the question as text.'; }
+            else if (/429|quota|rate.?limit|resource.?exhausted|too many requests/.test(l)) { why = 'Gemini is busy or your free daily/minute limit is used up.'; fix = 'Wait 1-2 minutes and try again, or add another API key in settings.'; }
+            else if (/503|overloaded|unavailable|high demand|busy/.test(l)) { why = 'Gemini\'s servers are overloaded right now. It is not a problem on your side.'; fix = 'Wait a minute and try again.'; }
+            else if (/timed out|timeout|abort/.test(l)) { why = 'The AI took too long to reply, so the site stopped waiting.'; fix = 'Try again, or upload fewer pages at once.'; }
+            else if (/api key|api_key|permission|401|403|invalid.*key|unauthorized/.test(l)) { why = 'The API key was rejected (wrong, expired, blocked in your country, or not allowed to use this model).'; fix = 'Check or replace your API key in settings.'; }
+            else if (/failed to fetch|network|networkerror|load failed|internet/.test(l)) { why = 'The site could not reach the internet or the AI server (connection problem, VPN or blocked network).'; fix = 'Check your internet connection and try again.'; }
+            else if (/non-json|json|parse/.test(l)) { why = 'The AI replied in a messy format that the site could not read.'; fix = 'Try again; this often works on the second attempt.'; }
+            else if (/ocr/.test(l)) { why = 'The offline image-reading (OCR) could not read the text from this picture.'; fix = 'Use a clearer or cropped image, or paste the text instead.'; }
+            else if (/storage|quota.*exceeded/.test(l)) { why = 'Your browser has no more space to keep the data.'; fix = 'Download a backup, then free some space.'; }
+            return { why, fix };
+        }
+        function showErrorPopup(title, raw, extraHtml) {
+            const e = explainError(raw);
+            showPopup({ title: title || 'Something went wrong', type: 'error', html:
+                `<div><b>What happened:</b> ${_escH(e.why)}</div><div><b>What to do:</b> ${_escH(e.fix)}</div>${extraHtml || ''}` +
+                (raw ? `<details class="text-xs text-gray-400"><summary class="cursor-pointer">Technical details</summary><pre class="whitespace-pre-wrap mt-1">${_escH(String(raw).slice(0, 1500))}</pre></details>` : '') });
+        }
+        // Any leftover alert() now shows in the in-site popup
+        window.alert = function (msg) {
+            const m = String(msg ?? '');
+            const isErr = /error|fail|could not|cannot|not found|invalid|no valid|blocked|missing/i.test(m);
+            const isOk = /success|saved|restored|complete|done/i.test(m) && !isErr;
+            showPopup({ title: isErr ? 'Something went wrong' : (isOk ? 'Done' : 'Notice'), type: isErr ? 'error' : (isOk ? 'ok' : 'info'),
+                html: (isErr ? `<div><b>What happened:</b></div>` : '') + `<div style="white-space:pre-wrap">${_escH(m)}</div>` + (isErr ? `<div class="text-xs text-gray-400">${_escH(explainError(m).why)}</div>` : '') });
+        };
+        window.addEventListener('unhandledrejection', e => { showErrorPopup('Something went wrong', (e.reason && e.reason.message) || e.reason); });
+        window.addEventListener('error', e => { if (e && e.message && !/ResizeObserver/.test(e.message)) showErrorPopup('Something went wrong', e.message); });
+
+        // ===== CHECK MISSED QUESTIONS =====
+        function computeMissedInfo(list) {
+            const found = new Set(); const unnumbered = [];
             list.forEach((q, i) => {
                 const n = parseInt(String(q.id || '').split('_').pop(), 10);
                 if (!isNaN(n) && n > 0 && n < 1000) found.add(n); else unnumbered.push(i + 1);
             });
             const expected = new Set();
-            try {
-                Object.keys(parseAnswerKeys(document.getElementById('import-answer-key').value || '')).forEach(k => expected.add(parseInt(k, 10)));
-            } catch (e) {}
+            let keyCount = 0;
+            try { const km = parseAnswerKeys(document.getElementById('import-answer-key').value || ''); keyCount = Object.keys(km).length; Object.keys(km).forEach(k => expected.add(parseInt(k, 10))); } catch (e) {}
             const total = parseInt((document.getElementById('import-total-questions') || {}).value, 10);
-            if (!isNaN(total) && total > 0) for (let n = 1; n <= total; n++) expected.add(n);
-            const maxFound = found.size ? Math.max(...found) : 0;
-            // Only fill 1..max when the list looks like a whole paper starting at Q1 (not a partial re-upload like Q81-85)
-            const minFound = found.size ? Math.min(...found) : 0;
-            const fillFrom = (minFound <= 3 || (!isNaN(total) && total > 0)) ? 1 : minFound;
+            const hasTotal = !isNaN(total) && total > 0;
+            if (hasTotal) for (let n = 1; n <= total; n++) expected.add(n);
+            const maxFound = found.size ? Math.max(...found) : 0, minFound = found.size ? Math.min(...found) : 0;
+            const fillFrom = (minFound <= 3 || hasTotal) ? 1 : minFound;
             for (let n = fillFrom; n <= maxFound; n++) expected.add(n);
-
             const missing = [...expected].filter(n => !isNaN(n) && !found.has(n)).sort((a, b) => a - b);
-            const extra = [...found].filter(n => expected.size && !expected.has(n)).sort((a, b) => a - b);
-            const hasReference = (!isNaN(total) && total > 0) || Object.keys(parseAnswerKeys(document.getElementById('import-answer-key').value || '')).length > 0;
-            if (missing.length === 0 && unnumbered.length === 0) {
-                if (hasReference && list.length > 0) {
-                    banner.className = 'rounded-xl border border-emerald-600/50 bg-emerald-900/20 text-emerald-300 px-4 py-3 text-xs';
-                    banner.innerHTML = `<b>All ${expected.size} expected questions are present.</b>`;
-                } else if (list.length > 0) {
-                    banner.className = 'rounded-xl border border-amber-600/50 bg-amber-900/20 text-amber-200 px-4 py-3 text-xs';
-                    banner.innerHTML = `No gaps found between Q${minFound} and Q${maxFound}. Questions after Q${maxFound} cannot be checked unless you type the paper's total in "Total questions in paper" (or paste a full answer key) and run again.`;
-                } else {
-                    banner.className = 'hidden';
-                    banner.innerHTML = '';
-                }
-                return;
-            }
+            return { missing, unnumbered, found, expectedCount: expected.size, hasReference: hasTotal || keyCount > 0, minFound, maxFound };
+        }
+        function refreshMissedButton(list) {
+            const btn = document.getElementById('btn-check-missed'), lab = document.getElementById('btn-check-missed-label');
+            if (!btn || !lab) return;
+            const info = computeMissedInfo(list);
+            const bad = info.missing.length + info.unnumbered.length;
+            if (bad > 0) { lab.textContent = `Check Missed Questions (${info.missing.length || info.unnumbered.length})`; btn.className = btn.className.replace(/bg-(slate|emerald|red)-\d+/g, 'bg-red-600').replace(/hover:bg-(slate|emerald|red)-\d+/g, 'hover:bg-red-500'); }
+            else { lab.textContent = 'Check Missed Questions'; btn.className = btn.className.replace(/bg-(slate|emerald|red)-\d+/g, 'bg-slate-600').replace(/hover:bg-(slate|emerald|red)-\d+/g, 'hover:bg-slate-500'); }
+        }
+        function _findSourceSnippet(n) {
+            const src = (window.lastImportReport && lastImportReport.source) || '';
+            if (!src) return '';
+            const re = new RegExp('(?:^|\\n|\\s)(?:Q\\.?\\s*)?' + n + '\\s*[.)]\\s+\\S', 'g');
+            let m, best = -1;
+            while ((m = re.exec(src))) { best = m.index; break; }
+            if (best < 0) return '';
+            const next = new RegExp('(?:\\n|\\s)(?:Q\\.?\\s*)?' + (n + 1) + '\\s*[.)]\\s+\\S').exec(src.slice(best + 5));
+            const end = next ? best + 5 + next.index : best + 900;
+            return src.slice(best, Math.min(end, best + 1500)).trim();
+        }
+        function openMissedPopup() {
+            const list = currentVerificationList || [];
+            const info = computeMissedInfo(list);
+            const rep = window.lastImportReport || { failed: [], ignored: [], noKey: [] };
             const parts = [];
-            if (missing.length) parts.push(`<b>${missing.length} question(s) NOT parsed:</b> <span class="font-mono text-sm text-red-200">${missing.join(', ')}</span>`);
-            if (unnumbered.length) parts.push(`${unnumbered.length} parsed card(s) have no valid question number (card position${unnumbered.length > 1 ? 's' : ''} ${unnumbered.join(', ')}) — check them.`);
-            if (extra.length) parts.push(`Not in your key/total but parsed: ${extra.join(', ')}.`);
-            parts.push('Upload only those missing questions (as text or image) with their keys, then save.');
-            banner.className = 'rounded-xl border border-red-500/60 bg-red-900/25 text-red-200 px-4 py-3 text-xs space-y-1';
-            banner.innerHTML = parts.map(p => `<div>${p}</div>`).join('');
+            let type = 'ok', title = 'All questions uploaded';
+            if (info.missing.length) {
+                type = 'error'; title = `${info.missing.length} question${info.missing.length > 1 ? 's' : ''} missed`;
+                parts.push(`<div>Parsed <b>${list.length}</b> of <b>${list.length + info.missing.length}</b> expected questions. These did <b>not</b> get uploaded:</div>
+                    <div class="flex flex-wrap gap-2" id="missed-chips">${info.missing.map(n => `<span class="px-2 py-1 rounded bg-red-900/40 border border-red-500/50 text-red-200 font-mono text-xs">Q${n}</span>`).join('')}</div>
+                    <button type="button" id="missed-view-btn" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-eye"></i> View missed questions</button>
+                    <div id="missed-view-area" class="hidden space-y-2"></div>
+                    <div class="text-xs text-gray-400">Tip: upload only these questions (text or image) with their keys and save again — duplicates are not created.</div>`);
+            } else if (info.unnumbered.length) {
+                type = 'warn'; title = 'Check numbering';
+            } else if (info.hasReference && list.length) {
+                parts.push(`<div>Great — all <b>${info.expectedCount}</b> expected questions are present. Nothing is missed.</div>`);
+            } else if (list.length) {
+                type = 'warn'; title = 'No gaps found';
+                parts.push(`<div>No gaps found between Q${info.minFound} and Q${info.maxFound}. Questions after Q${info.maxFound} cannot be checked unless you type the paper's total in <b>"Total questions in paper"</b> or paste the full answer key, then run again.</div>`);
+            } else parts.push('<div>Nothing has been parsed yet.</div>');
+            if (info.unnumbered.length) parts.push(`<div class="text-amber-300">${info.unnumbered.length} card(s) have no valid question number (card position ${info.unnumbered.join(', ')}). Please check them.</div>`);
+            if (rep.failed && rep.failed.length) parts.push(`<div class="text-amber-300"><b>Parts the AI failed on (${rep.failed.length}):</b><ul class="list-disc ml-5 text-xs">${rep.failed.map(f => `<li>${_escH(f.slice(0, 160))} — <i>${_escH(explainError(f).why)}</i></li>`).join('')}</ul></div>`);
+            if (rep.noKey && rep.noKey.length) parts.push(`<div class="text-amber-300 text-xs">${rep.noKey.length} question(s) are not in your answer key, so their Key is only an AI guess: ${rep.noKey.slice(0, 40).join(', ')}. Check the Key box before saving.</div>`);
+            if (rep.ignored && rep.ignored.length) parts.push(`<div class="text-gray-400 text-xs">Ignored ${rep.ignored.length} extra/duplicate item(s): ${_escH(rep.ignored.slice(0, 40).join(', '))}</div>`);
+            showPopup({ title, type, html: parts.join(''), onOpen: body => {
+                const vb = body.querySelector('#missed-view-btn'); if (!vb) return;
+                vb.onclick = () => {
+                    const area = body.querySelector('#missed-view-area');
+                    area.classList.toggle('hidden');
+                    if (area.dataset.done) return; area.dataset.done = 1;
+                    area.innerHTML = info.missing.map(n => {
+                        const sn = _findSourceSnippet(n);
+                        return `<div class="border border-gray-700 rounded-lg p-2 bg-black/30"><div class="font-bold text-red-300 text-xs mb-1">Q${n}</div>` +
+                            (sn ? `<pre class="whitespace-pre-wrap text-xs text-gray-300">${_escH(sn)}</pre>` : `<div class="text-xs text-gray-400">The text of this question is not available here (it was probably in an image or scanned page, or the AI never returned it). Find Q${n} in your original paper and upload it again.</div>`) + `</div>`;
+                    }).join('');
+                };
+            } });
         }
 
         function renderVerificationPreview(list) {
             currentVerificationList = list;
             document.getElementById('parsed-count').textContent = list.length;
-            updateMissingBanner(list);
+            refreshMissedButton(list);
             const container = document.getElementById('verification-cards-container');
             container.innerHTML = '';
 
