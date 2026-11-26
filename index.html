@@ -430,6 +430,9 @@
                 </div>
             </div>
 
+            <div id="expl-status-bar" class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border border-sky-500/30 bg-sky-900/10 font-sans text-xs text-gray-300"></div>
+            <input type="file" id="expl-import-input" accept=".json" class="hidden">
+
             <!-- Active Filter Count & Status Bar -->
             <div class="flex items-center justify-between px-1 font-sans text-xs text-gray-400">
                 <div>Showing <span id="results-count" class="font-bold text-amber-400">10</span> questions matching active criteria</div>
@@ -1742,6 +1745,8 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                             `;
                         }).join('')}
                     </div>
+
+                    ${explButtonHtml(q)}
 
                     <!-- Toggleable Analysis Accordion -->
                     <div class="pt-2 border-t border-gray-700/40">
@@ -4179,5 +4184,217 @@ function confirmSubmitCbt() {
     document.getElementById('cbt-arena').classList.add('hidden');
 }
     </script>
+<script>
+// ===== BACKGROUND EXPLANATION WRITER (Gemini + Google Search grounding) =====
+// Explanations are prepared slowly in the background and stored in this browser (IndexedDB).
+// The "See Explanation" button only shows what is already saved - it never calls the AI.
+(function () {
+    const EXPL_DELAY_MS = 9000;          // pause between questions (keeps free limits safe)
+    const MAX_BACKOFF_MS = 15 * 60 * 1000;
+    window.explMap = {};
+    let idb = null, timer = null, running = false, backoff = 0, keyIdx = 0, consecutiveErrors = 0;
+    let modelCache = null, lastMsg = 'Starting soon...';
+    const skip = new Set(), priority = [], failCount = {};
+    const isPaused = () => { try { return localStorage.getItem('expl_paused') === '1'; } catch (e) { return false; } };
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+    function openDb() { return new Promise((res, rej) => { const r = indexedDB.open('pyq_expl_v1', 1); r.onupgradeneeded = () => r.result.createObjectStore('e', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+    async function loadAll() {
+        try {
+            idb = await openDb();
+            await new Promise(res => { const rq = idb.transaction('e').objectStore('e').getAll(); rq.onsuccess = () => { rq.result.forEach(x => explMap[x.id] = x); res(); }; rq.onerror = () => res(); });
+        } catch (e) { idb = null; }
+    }
+    function putExpl(rec) {
+        explMap[rec.id] = rec;
+        if (!idb) return Promise.resolve();
+        return new Promise(res => { try { const tx = idb.transaction('e', 'readwrite'); tx.objectStore('e').put(rec); tx.oncomplete = res; tx.onerror = res; } catch (e) { res(); } });
+    }
+
+    // ----- Card button / panel -----
+    window.explButtonHtml = function (q) {
+        return `<div class="pt-2 border-t border-gray-700/40">
+            <button type="button" id="expl-btn-${q.id}" onclick="toggleExplanation('${q.id}')" class="px-3 py-1.5 rounded-lg text-xs font-bold font-sans bg-sky-700/40 hover:bg-sky-600/50 text-sky-200 border border-sky-500/40 flex items-center gap-2">
+                <i class="fa-solid fa-lightbulb"></i> See Explanation
+            </button>
+            <div id="expl-panel-${q.id}" class="hidden mt-3 font-sans text-xs bg-black/30 p-4 rounded-xl border border-gray-700/50 space-y-2"></div>
+        </div>`;
+    };
+    function renderPanel(id) {
+        const panel = document.getElementById('expl-panel-' + id); if (!panel) return;
+        const e = explMap[id];
+        if (!e) {
+            const pos = pyqDatabase.filter(q => !explMap[q.id]).length;
+            panel.innerHTML = `<div class="text-amber-300"><i class="fa-solid fa-hourglass-half"></i> The explanation for this question is not ready yet.</div>
+                <div class="text-gray-400">It is being prepared slowly in the background (${pos} question${pos === 1 ? '' : 's'} still waiting). Keep the site open and check again later.</div>
+                <button type="button" onclick="explPrioritize('${id}')" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100">Prepare this one next</button>`;
+            return;
+        }
+        const body = esc(e.text).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
+        const src = (e.sources || []).map(s => `<a href="${esc(s.uri)}" target="_blank" rel="noopener noreferrer" class="underline text-sky-300 hover:text-sky-200">${esc(s.title || 'source')}</a>`).join(' · ');
+        panel.innerHTML = `<div class="text-gray-200 leading-relaxed font-pyq-text">${body}</div>
+            ${src ? `<div class="text-gray-400">Sources: ${src}</div>` : (e.grounded === false ? '<div class="text-gray-500">Written without web search (no sources).</div>' : '')}
+            <div class="flex gap-2 pt-1">
+              <button type="button" onclick="explEdit('${id}')" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100"><i class="fa-solid fa-pen"></i> Edit</button>
+              <button type="button" onclick="explPrioritize('${id}', true)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100"><i class="fa-solid fa-rotate"></i> Regenerate</button>
+            </div>`;
+    }
+    window.toggleExplanation = function (id) {
+        const panel = document.getElementById('expl-panel-' + id); if (!panel) return;
+        if (panel.classList.contains('hidden')) renderPanel(id);
+        panel.classList.toggle('hidden');
+    };
+    window.explPrioritize = function (id, regen) {
+        if (!priority.includes(id)) priority.unshift(id);
+        skip.delete(id); failCount[id] = 0;
+        if (regen) priority.regen = (priority.regen || new Set()).add(id);
+        showPopup({ title: 'Queued', type: 'info', html: `<div>${regen ? 'A new explanation will be written next' : 'This question will be prepared next'}, in the background. Check back in a minute or two.</div>` });
+        kick(500);
+    };
+    window.explEdit = function (id) {
+        const e = explMap[id] || { id, text: '' };
+        showPopup({ title: 'Edit explanation', type: 'info', html: `<textarea id="expl-edit-ta" rows="10" style="width:100%;background:#000;color:#e5e7eb;border:1px solid #4b5563;border-radius:8px;padding:8px;font-size:13px;">${esc(e.text)}</textarea><button type="button" id="expl-edit-save" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold">Save</button>`,
+            onOpen: (body, close) => { body.querySelector('#expl-edit-save').onclick = async () => { const t = body.querySelector('#expl-edit-ta').value.trim(); if (!t) return; await putExpl({ ...e, id, text: t, edited: true, ts: Date.now() }); renderPanel(id); updateBar(); close(); }; } });
+    };
+
+    // ----- Status bar -----
+    function updateBar() {
+        const el = document.getElementById('expl-status-bar'); if (!el) return;
+        const total = pyqDatabase.length, done = pyqDatabase.filter(q => explMap[q.id]).length;
+        const paused = isPaused();
+        el.innerHTML = `<span><i class="fa-solid fa-lightbulb text-sky-300"></i> Explanations ready: <b class="text-sky-300">${done}</b> / ${total}</span>
+            <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}</span>
+            <span class="flex gap-3">
+              <button type="button" onclick="explTogglePause()" class="text-sky-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button>
+              <button type="button" onclick="explExport()" class="text-gray-400 hover:underline">Export</button>
+              <button type="button" onclick="document.getElementById('expl-import-input').click()" class="text-gray-400 hover:underline">Import</button>
+            </span>`;
+    }
+    window.explTogglePause = function () { try { localStorage.setItem('expl_paused', isPaused() ? '0' : '1'); } catch (e) {} updateBar(); if (!isPaused()) kick(500); };
+    window.explExport = function () {
+        const blob = new Blob([JSON.stringify(Object.values(explMap))], { type: 'application/json' });
+        const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `UPSC_Explanations_${new Date().toISOString().slice(0, 10)}.json`; a.click();
+    };
+    window.explImport = function (ev) {
+        const f = ev.target.files[0]; if (!f) return;
+        const r = new FileReader();
+        r.onload = async () => { try { const arr = JSON.parse(r.result); let n = 0; for (const x of arr) { if (x && x.id && x.text) { await putExpl(x); n++; } } updateBar(); showPopup({ title: 'Imported', type: 'ok', html: `<div>Imported ${n} explanations.</div>` }); } catch (e) { showErrorPopup('Could not import explanations', 'Invalid JSON: ' + e.message); } };
+        r.readAsText(f); ev.target.value = '';
+    };
+
+    // ----- Gemini call -----
+    function getKeys() {
+        let raw = ''; try { raw = localStorage.getItem('upsc_gemini_api_key') || ''; } catch (e) {}
+        return raw.split(/[\s,;]+/).map(k => k.trim()).filter(k => k.length > 10 && (k.startsWith('AIza') || k.startsWith('AQ.')));
+    }
+    async function fetchT(url, opt, ms) { const c = new AbortController(); const t = setTimeout(() => c.abort(), ms); try { return await fetch(url, { ...opt, signal: c.signal }); } finally { clearTimeout(t); } }
+    async function getModels(key) {
+        if (modelCache) return modelCache;
+        try {
+            const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`, {}, 15000);
+            const d = await r.json();
+            if (r.ok && Array.isArray(d.models)) {
+                const v = d.models.filter(m => (m.supportedGenerationMethods || []).includes('generateContent')).map(m => m.name.replace(/^models\//, ''))
+                    .filter(n => /flash/i.test(n) && !/tts|audio|image|robotics|computer|custom|embedding|aqa|exp|live/i.test(n));
+                v.sort((a, b) => ((/lite/i.test(a) ? 10 : 0) + (/latest/i.test(a) ? 0 : 5)) - ((/lite/i.test(b) ? 10 : 0) + (/latest/i.test(b) ? 0 : 5)));
+                if (v.length) { modelCache = v.slice(0, 4); return modelCache; }
+            }
+        } catch (e) {}
+        return ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+    }
+    function buildPrompt(q) {
+        const L = ['A', 'B', 'C', 'D'];
+        const keyL = String(q.officialKey || '').toUpperCase();
+        const ki = L.indexOf(keyL);
+        return `You are a UPSC exam mentor. Use Google Search to check what good coaching institutes and reliable sources say about this question, then write ONE clear explanation IN YOUR OWN WORDS (do not copy text from any site).
+
+Exam: ${q.exam} ${q.year}
+Question: ${q.question}
+${(q.options || []).map((o, i) => `(${L[i]}) ${o}`).join('\n')}
+Official answer key: ${keyL ? `(${keyL}) ${ki >= 0 ? q.options[ki] : ''}` : q.correctAnswer}
+
+Format (plain text, no preamble, max 220 words):
+Answer: (letter) one-line reason.
+Why it is correct: 2-3 short lines with the key facts.
+Why others are wrong: one short line per wrong option / statement.
+Remember: one useful related fact for UPSC.
+If reliable sources clearly disagree with the official key, add a last line starting "Note:".`;
+    }
+    class ExplErr extends Error { constructor(msg, kind) { super(msg); this.kind = kind; } }
+    async function callOnce(key, model, q, useSearch) {
+        const body = { contents: [{ role: 'user', parts: [{ text: buildPrompt(q) }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 4096 } };
+        if (useSearch) body.tools = [{ google_search: {} }];
+        let r;
+        try { r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 70000); }
+        catch (e) { throw new ExplErr(e.name === 'AbortError' ? 'Timed out' : 'Network: ' + e.message, 'net'); }
+        let d = {}; try { d = await r.json(); } catch (e) {}
+        if (!r.ok) {
+            const m = (d.error && d.error.message) || ('HTTP ' + r.status);
+            const kind = r.status === 429 ? 'quota' : (r.status === 401 || r.status === 403) ? 'key' : r.status === 503 ? 'busy' : (r.status === 400 || r.status === 404) ? 'model' : 'other';
+            throw new ExplErr(`${r.status}: ${m}`, kind);
+        }
+        const c = d.candidates && d.candidates[0];
+        const text = c && c.content && c.content.parts ? c.content.parts.filter(p => p.text && !p.thought).map(p => p.text).join('').trim() : '';
+        if (!text) throw new ExplErr('Empty reply (' + ((c && c.finishReason) || 'no candidates') + ')', 'empty');
+        const seen = new Set(), sources = [];
+        ((c.groundingMetadata && c.groundingMetadata.groundingChunks) || []).forEach(g => { if (g.web && g.web.uri && !seen.has(g.web.uri)) { seen.add(g.web.uri); sources.push({ uri: g.web.uri, title: g.web.title || '' }); } });
+        return { text, sources: sources.slice(0, 6), grounded: useSearch };
+    }
+    async function generateFor(q) {
+        const keys = getKeys();
+        if (!keys.length) throw new ExplErr('No Gemini API key saved', 'nokey');
+        let last = null;
+        for (let k = 0; k < keys.length; k++) {
+            const key = keys[(keyIdx + k) % keys.length];
+            const models = await getModels(key);
+            for (const useSearch of [true, false]) {
+                for (const model of models) {
+                    try { const out = await callOnce(key, model, q, useSearch); keyIdx = (keyIdx + k) % keys.length; out.model = model; return out; }
+                    catch (e) { last = e; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
+                }
+                if (last && (last.kind === 'quota' || last.kind === 'key')) break;
+            }
+        }
+        if (last && last.kind === 'quota') keyIdx = (keyIdx + 1) % keys.length;
+        throw last || new ExplErr('Unknown error', 'other');
+    }
+
+    // ----- Scheduler -----
+    function nextTarget() {
+        while (priority.length) { const id = priority.shift(); const q = pyqDatabase.find(x => x.id === id); if (q) return q; }
+        return pyqDatabase.find(q => !explMap[q.id] && !skip.has(q.id));
+    }
+    function kick(ms) { clearTimeout(timer); timer = setTimeout(tick, ms); }
+    async function tick() {
+        if (running) return; running = true;
+        let delay = EXPL_DELAY_MS;
+        try {
+            if (isPaused()) { updateBar(); delay = 30000; return; }
+            if (!getKeys().length) { lastMsg = 'Add a Gemini API key in Settings to start'; updateBar(); delay = 60000; return; }
+            const q = nextTarget();
+            if (!q) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
+            lastMsg = `Writing explanation... (${q.exam} ${q.year})`; updateBar();
+            try {
+                const out = await generateFor(q);
+                await putExpl({ id: q.id, text: out.text, sources: out.sources, grounded: out.grounded, model: out.model, ts: Date.now() });
+                renderPanel(q.id); backoff = 0; consecutiveErrors = 0;
+                lastMsg = 'Working in the background'; updateBar();
+            } catch (e) {
+                consecutiveErrors++;
+                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min`; }
+                else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check your keys in Settings'; }
+                else { failCount[q.id] = (failCount[q.id] || 0) + 1; if (failCount[q.id] >= 3) skip.add(q.id); lastMsg = 'Last try failed (' + explainError(e.message).why + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
+                console.warn('[explanations]', e.message);
+                updateBar();
+            }
+        } finally { running = false; kick(delay); }
+    }
+    document.addEventListener('DOMContentLoaded', async () => {
+        const inp = document.getElementById('expl-import-input'); if (inp) inp.addEventListener('change', explImport);
+        await loadAll(); updateBar(); setInterval(updateBar, 15000); kick(20000);
+    });
+})();
+</script>
+
 </body>
 </html>
