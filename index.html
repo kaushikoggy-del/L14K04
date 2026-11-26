@@ -4342,7 +4342,7 @@ If reliable sources clearly disagree with the official key, add a last line star
     }
     async function generateFor(q) {
         const keys = getKeys();
-        if (!keys.length) throw new ExplErr('No Gemini API key saved', 'nokey');
+        if (!keys.length && !getAltKeys().length) throw new ExplErr('No API key saved', 'nokey');
         let last = null;
         for (let k = 0; k < keys.length; k++) {
             const key = keys[(keyIdx + k) % keys.length];
@@ -4356,7 +4356,47 @@ If reliable sources clearly disagree with the official key, add a last line star
             }
         }
         if (last && last.kind === 'quota') keyIdx = (keyIdx + 1) % keys.length;
+        // All Gemini keys are exhausted / busy: try Groq and OpenRouter keys (no web search, so no sources)
+        const alt = getAltKeys();
+        for (const a of alt) {
+            try { return await callOpenAIStyle(a, q); } catch (e) { if (!last || last.kind !== 'key') last = e; }
+        }
         throw last || new ExplErr('Unknown error', 'other');
+    }
+    function getAltKeys() {
+        let raw = ''; try { raw = localStorage.getItem('upsc_gemini_api_key') || ''; } catch (e) {}
+        const ks = raw.split(/[\s,;]+/).map(k => k.trim()).filter(k => k.length > 10);
+        return [...ks.filter(k => k.startsWith('gsk_')).map(k => ({ type: 'groq', key: k })), ...ks.filter(k => k.startsWith('sk-or-')).map(k => ({ type: 'or', key: k }))];
+    }
+    let groqModel = null;
+    async function callOpenAIStyle(a, q) {
+        const isGroq = a.type === 'groq';
+        const base = isGroq ? 'https://api.groq.com/openai/v1' : 'https://openrouter.ai/api/v1';
+        const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + a.key };
+        if (!isGroq) { headers['HTTP-Referer'] = location.origin; headers['X-Title'] = 'UPSC PYQ Analytics'; }
+        let models = isGroq ? [] : ['openrouter/free', 'google/gemini-2.0-flash', 'openai/gpt-4o-mini'];
+        if (isGroq) {
+            if (!groqModel) {
+                try {
+                    const r = await fetchT(base + '/models', { headers }, 15000); const d = await r.json();
+                    const v = (d.data || []).map(m => m.id).filter(id => !/whisper|tts|guard|safeguard|embed|vision|allam|orpheus|canopylabs|playai|compound/i.test(id));
+                    v.sort((x, y) => { const sc = z => (/70b|120b|90b/i.test(z) ? 0 : /32b|17b|8b/i.test(z) ? 5 : 10); return sc(x) - sc(y); });
+                    groqModel = v;
+                } catch (e) { groqModel = ['llama-3.3-70b-versatile']; }
+            }
+            models = groqModel.slice(0, 3);
+        }
+        let last = null;
+        for (const model of models) {
+            try {
+                const r = await fetchT(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model, temperature: 0.3, max_tokens: 900, messages: [{ role: 'user', content: buildPrompt(q).replace('Use Google Search to check what good coaching institutes and reliable sources say about this question, then write', 'Write') }] }) }, 45000);
+                const d = await r.json();
+                if (!r.ok || d.error) { last = new ExplErr((isGroq ? 'Groq' : 'OpenRouter') + ': ' + ((d.error && d.error.message) || 'HTTP ' + r.status), r.status === 429 ? 'quota' : 'other'); continue; }
+                const text = ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
+                if (text) return { text, sources: [], grounded: false, model };
+            } catch (e) { last = new ExplErr((isGroq ? 'Groq' : 'OpenRouter') + ': ' + (e.name === 'AbortError' ? 'Timed out' : e.message), 'net'); }
+        }
+        throw last || new ExplErr('No reply', 'other');
     }
 
     // ----- Scheduler -----
@@ -4370,7 +4410,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         let delay = EXPL_DELAY_MS;
         try {
             if (isPaused()) { updateBar(); delay = 30000; return; }
-            if (!getKeys().length) { lastMsg = 'Add a Gemini API key in Settings to start'; updateBar(); delay = 60000; return; }
+            if (!getKeys().length && !getAltKeys().length) { lastMsg = 'Add a Gemini API key in Settings to start'; updateBar(); delay = 60000; return; }
             const q = nextTarget();
             if (!q) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
             lastMsg = `Writing explanation... (${q.exam} ${q.year})`; updateBar();
