@@ -1658,21 +1658,55 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
         }
 
         // RENDER PYQ LIST CARDS
+        // Only a page of cards is drawn at a time (keeps the site fast with thousands of questions)
+        const CARD_PAGE = 30;
+        let _renderLimit = CARD_PAGE, _renderQs = [], _moreObserver = null;
         function renderPYQList(questions) {
+            _renderQs = questions;
+            _renderLimit = CARD_PAGE;
+            drawCards(false);
+        }
+        function showMoreCards() {
+            if (_renderLimit >= _renderQs.length) return;
+            const from = _renderLimit;
+            _renderLimit = Math.min(_renderQs.length, _renderLimit + CARD_PAGE);
+            if (isGroupedByTheme) { drawCards(true); return; }
+            const container = document.getElementById('pyq-list-container');
+            const sentinel = document.getElementById('more-cards-sentinel'); if (sentinel) sentinel.remove();
+            container.insertAdjacentHTML('beforeend', _renderQs.slice(from, _renderLimit).map(q => renderCardHTML(q)).join(''));
+            addMoreSentinel(container);
+        }
+        function addMoreSentinel(container) {
+            if (_moreObserver) { _moreObserver.disconnect(); _moreObserver = null; }
+            if (_renderLimit >= _renderQs.length) return;
+            const div = document.createElement('div');
+            div.id = 'more-cards-sentinel';
+            div.className = 'text-center py-4';
+            div.innerHTML = `<button type="button" onclick="showMoreCards()" class="px-4 py-2 rounded-lg border border-gray-600 text-xs font-semibold text-gray-300 hover:border-amber-500 hover:text-amber-400">Showing ${_renderLimit} of ${_renderQs.length} - Load more</button>`;
+            container.appendChild(div);
+            if ('IntersectionObserver' in window) {
+                _moreObserver = new IntersectionObserver(es => { if (es.some(e => e.isIntersecting)) showMoreCards(); }, { rootMargin: '600px' });
+                _moreObserver.observe(div);
+            }
+        }
+        function drawCards(keepScroll) {
+            const questions = _renderQs.slice(0, _renderLimit);
             const container = document.getElementById('pyq-list-container');
             const zeroState = document.getElementById('zero-results');
 
-            if (questions.length === 0) {
+            if (_renderQs.length === 0) {
                 container.innerHTML = '';
                 zeroState.classList.remove('hidden');
+                if (_moreObserver) { _moreObserver.disconnect(); _moreObserver = null; }
                 return;
             }
 
             zeroState.classList.add('hidden');
 
             if (isGroupedByTheme) {
-                // Grouping Logic
                 const grouped = {};
+                const totals = {};
+                _renderQs.forEach(q => { const t = q.theme || 'General'; totals[t] = (totals[t] || 0) + 1; });
                 questions.forEach(q => {
                     const theme = q.theme || 'General';
                     if (!grouped[theme]) grouped[theme] = [];
@@ -1685,7 +1719,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         <div class="space-y-3">
                             <div class="flex items-center space-x-2 border-b border-gray-700/80 pb-2 pt-2">
                                 <span class="w-3 h-3 rounded-full bg-amber-500 inline-block"></span>
-                                <h3 class="font-bold text-base text-amber-400 font-sans">${theme} (${grouped[theme].length})</h3>
+                                <h3 class="font-bold text-base text-amber-400 font-sans">${theme} (${totals[theme]})</h3>
                             </div>
                             <div class="space-y-4">
                                 ${grouped[theme].map(q => renderCardHTML(q)).join('')}
@@ -1697,6 +1731,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
             } else {
                 container.innerHTML = questions.map(q => renderCardHTML(q)).join('');
             }
+            addMoreSentinel(container);
         }
 
         function renderCardHTML(q) {
