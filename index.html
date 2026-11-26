@@ -2578,8 +2578,24 @@ ${extraContent}`;
             const maxFound = found.size ? Math.max(...found) : 0, minFound = found.size ? Math.min(...found) : 0;
             const fillFrom = (minFound <= 3 || hasTotal) ? 1 : minFound;
             for (let n = fillFrom; n <= maxFound; n++) expected.add(n);
+            // Count question numbers printed in the uploaded text itself (no answer key needed)
+            const srcNums = detectNumbersFromSource((window.lastImportReport && lastImportReport.source) || '', found);
+            srcNums.forEach(n => expected.add(n));
             const missing = [...expected].filter(n => !isNaN(n) && !found.has(n)).sort((a, b) => a - b);
-            return { missing, unnumbered, found, expectedCount: expected.size, hasReference: hasTotal || keyCount > 0, minFound, maxFound };
+            const startsLate = !hasTotal && keyCount === 0 && srcNums.length === 0 && minFound > 1;
+            return { missing, unnumbered, found, expectedCount: expected.size, hasReference: hasTotal || keyCount > 0 || srcNums.length >= 3, fromSource: srcNums.length, minFound, maxFound, startsLate };
+        }
+        // Walk through the uploaded text and follow the chain of question numbers (1. 2. 3. ... / Q5 / 6)) to learn which questions exist.
+        function detectNumbersFromSource(src, found) {
+            if (!src || src.length < 50) return [];
+            const re = /(?:^|\n|\s)(?:Q\.?\s*)?(\d{1,3})\s*[.)]\s+(?=[A-Za-z(\u0900-\u097F"'])/g;
+            let m, last = 0; const out = [];
+            while ((m = re.exec(src))) {
+                const n = parseInt(m[1], 10);
+                if (!last) { if (n === 1 || found.has(n)) { last = n; out.push(n); } continue; }
+                if (n > last && n <= last + 3) { for (let k = last + 1; k <= n; k++) out.push(k); last = n; }
+            }
+            return out.length >= 3 ? out : [];
         }
         function refreshMissedButton(list) {
             const btn = document.getElementById('btn-check-missed'), lab = document.getElementById('btn-check-missed-label');
@@ -2606,20 +2622,27 @@ ${extraContent}`;
             const rep = window.lastImportReport || { failed: [], ignored: [], noKey: [] };
             const parts = [];
             let type = 'ok', title = 'All questions uploaded';
+            if (list.length) {
+                const basis = info.fromSource ? 'counted from the question numbers printed in your uploaded text' : (info.hasReference ? 'based on your answer key / total' : 'based only on the numbers the AI returned');
+                parts.push(`<div class="rounded-lg border border-gray-700 bg-black/30 p-2 text-xs"><b>Report</b> (${basis}):<br>Parsed: <b>${list.length}</b> &nbsp;|&nbsp; Expected: <b>${info.expectedCount || list.length}</b> &nbsp;|&nbsp; Missed: <b>${info.missing.length}</b>${info.minFound ? ` &nbsp;|&nbsp; Range found: Q${info.minFound}–Q${info.maxFound}` : ''}</div>`);
+            }
             if (info.missing.length) {
                 type = 'error'; title = `${info.missing.length} question${info.missing.length > 1 ? 's' : ''} missed`;
-                parts.push(`<div>Parsed <b>${list.length}</b> of <b>${list.length + info.missing.length}</b> expected questions. These did <b>not</b> get uploaded:</div>
+                parts.push(`<div>These did <b>not</b> get uploaded:</div>
                     <div class="flex flex-wrap gap-2" id="missed-chips">${info.missing.map(n => `<span class="px-2 py-1 rounded bg-red-900/40 border border-red-500/50 text-red-200 font-mono text-xs">Q${n}</span>`).join('')}</div>
                     <button type="button" id="missed-view-btn" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-eye"></i> View missed questions</button>
                     <div id="missed-view-area" class="hidden space-y-2"></div>
                     <div class="text-xs text-gray-400">Tip: upload only these questions (text or image) with their keys and save again — duplicates are not created.</div>`);
             } else if (info.unnumbered.length) {
                 type = 'warn'; title = 'Check numbering';
+            } else if (info.startsLate) {
+                type = 'warn'; title = 'Check the start';
+                parts.push(`<div>Your list starts at <b>Q${info.minFound}</b>. If this was a full paper, <b>Q1${info.minFound > 2 ? '–Q' + (info.minFound - 1) : ''}</b> were not parsed. (If you only uploaded part of a paper, ignore this.) No other gaps were found up to Q${info.maxFound}. Questions after Q${info.maxFound} cannot be checked for scanned/image uploads unless you type the paper's total in <b>"Total questions in paper"</b>.</div>`);
             } else if (info.hasReference && list.length) {
                 parts.push(`<div>Great — all <b>${info.expectedCount}</b> expected questions are present. Nothing is missed.</div>`);
             } else if (list.length) {
                 type = 'warn'; title = 'No gaps found';
-                parts.push(`<div>No gaps found between Q${info.minFound} and Q${info.maxFound}. Questions after Q${info.maxFound} cannot be checked unless you type the paper's total in <b>"Total questions in paper"</b> or paste the full answer key, then run again.</div>`);
+                parts.push(`<div>No gaps found between Q${info.minFound} and Q${info.maxFound}. For image/scanned uploads, questions after Q${info.maxFound} cannot be checked unless you type the paper's total in <b>"Total questions in paper"</b>.</div>`);
             } else parts.push('<div>Nothing has been parsed yet.</div>');
             if (info.unnumbered.length) parts.push(`<div class="text-amber-300">${info.unnumbered.length} card(s) have no valid question number (card position ${info.unnumbered.join(', ')}). Please check them.</div>`);
             if (rep.failed && rep.failed.length) parts.push(`<div class="text-amber-300"><b>Parts the AI failed on (${rep.failed.length}):</b><ul class="list-disc ml-5 text-xs">${rep.failed.map(f => `<li>${_escH(f.slice(0, 160))} — <i>${_escH(explainError(f).why)}</i></li>`).join('')}</ul></div>`);
