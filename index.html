@@ -4734,7 +4734,7 @@ If reliable sources clearly disagree with the official key, add a last line star
     let idb = null, timer = null, running = false, backoff = 0, errs = 0, lastMsg = 'Starting soon...';
     const skip = new Set(), fails = {};
     const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-    const isPaused = () => { try { return localStorage.getItem('elim_paused') === '1'; } catch (e) { return false; } };
+    const isPaused = () => { try { return localStorage.getItem('elim_paused') !== '0'; } catch (e) { return true; } };  // paused by default; press Resume to start
     const inRange = q => { const y = Number(q.year); return y >= FROM_YEAR && y <= TO_YEAR; };
     const ready = q => /^[A-D]$/i.test(String(q.officialKey || '')) && Array.isArray(q.options) && q.options.length === 4;
 
