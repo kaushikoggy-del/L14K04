@@ -4296,7 +4296,8 @@ function confirmSubmitCbt() {
     // An explanation is UNVERIFIED when it was written without web search (Groq / OpenRouter, or Gemini without search) and has not been checked by Gemini yet.
     const isUnverified = e => !!e && !e.verified && !e.edited && e.grounded === false;
     window.explIsUnverified = isUnverified;
-    const altOff = () => { try { return localStorage.getItem('alt_fallback_off') === '1'; } catch (e) { return false; } };
+    const altOff = () => { try { return localStorage.getItem('alt_fallback_off') !== '0'; } catch (e) { return true; } };   // Groq/OpenRouter fallback is OFF unless you switch it ON
+    const strictOn = () => { try { return localStorage.getItem('expl_strict') !== '0'; } catch (e) { return true; } };         // strict = explanations are written ONLY with Gemini web search
     const verifyOn = () => { try { return localStorage.getItem('expl_verify_on') === '1'; } catch (e) { return false; } };
     const setVerifyOn = v => { try { localStorage.setItem('expl_verify_on', v ? '1' : '0'); } catch (e) {} };
     const verifyPrio = [], vskip = new Set(), vfail = {};
@@ -4375,6 +4376,7 @@ function confirmSubmitCbt() {
             <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}</span>
             <span class="flex flex-wrap gap-3">
               <button type="button" onclick="explToggleVerify()" class="text-emerald-300 hover:underline">${verifyOn() ? 'Stop verifying' : 'Verify with Gemini'}${unv ? ' (' + unv + ')' : ''}</button>
+              <button type="button" onclick="explToggleStrict()" class="text-emerald-300 hover:underline">Strict (search only): ${strictOn() ? 'ON' : 'OFF'}</button>
               <button type="button" onclick="explToggleAlt()" class="text-amber-300 hover:underline">Groq fallback: ${altOff() ? 'OFF' : 'ON'}</button>
               <button type="button" onclick="explTogglePause()" class="text-sky-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button>
               <button type="button" onclick="explExport()" class="text-gray-400 hover:underline">Export</button>
@@ -4388,12 +4390,19 @@ function confirmSubmitCbt() {
         updateBar();
     };
     window.explTogglePause = function () { try { localStorage.setItem('expl_paused', isPaused() ? '0' : '1'); } catch (e) {} updateBar(); if (!isPaused()) kick(500); };
+    window.explToggleStrict = function () {
+        try { localStorage.setItem('expl_strict', strictOn() ? '0' : '1'); } catch (e) {}
+        updateBar(); kick(500);
+        showPopup({ title: strictOn() ? 'Strict mode is ON' : 'Strict mode is OFF', type: 'info', html: strictOn()
+            ? '<div>New explanations are written <b>only with Gemini web search</b>. If the search limit is finished, the writer waits and tries again later. No unverified explanation will be created.</div>'
+            : '<div>When Gemini web search is not available, the writer may write <b>without web search</b> (and, if Groq fallback is ON, with Groq). Those explanations are marked UNVERIFIED.</div>' });
+    };
     window.explToggleAlt = function () {
         try { localStorage.setItem('alt_fallback_off', altOff() ? '0' : '1'); } catch (e) {}
         updateBar();
         showPopup({ title: altOff() ? 'Groq / OpenRouter fallback is OFF' : 'Groq / OpenRouter fallback is ON', type: 'info', html: altOff()
-            ? '<div>When all Gemini keys are used up, the writers will WAIT for Gemini instead of writing explanations without web search.</div>'
-            : '<div>When all Gemini keys are used up, the writers will continue with Groq / OpenRouter. Those explanations are marked <b>UNVERIFIED</b> until Gemini checks them.</div>' });
+            ? '<div>When all Gemini keys are used up, the writers will WAIT for Gemini instead of using Groq / OpenRouter.</div>'
+            : '<div>When all Gemini keys are used up, the writers can continue with Groq / OpenRouter.' + (strictOn() ? ' <b>Note:</b> Strict mode is ON, so explanations will still wait for Gemini web search; Groq is used only for elimination logic. Turn Strict mode OFF to let Groq write explanations (marked UNVERIFIED).' : ' Explanations written this way are marked <b>UNVERIFIED</b> until Gemini checks them.') + '</div>' });
     };
     window.explToggleVerify = function () {
         if (!verifyOn() && !getKeys().length) { showPopup({ title: 'Gemini key needed', type: 'warn', html: '<div>Verification must be done by Gemini with web search. Add a Gemini API key in the API Key Vault first.</div>' }); return; }
@@ -4477,12 +4486,14 @@ If reliable sources clearly disagree with the official key, add a last line star
     }
     async function generateFor(q, opts) {
         const keys = getKeys();
-        if (!keys.length && ((opts && opts.geminiOnly) || !getAltKeys().length)) throw new ExplErr(altOff() && !keys.length ? 'No Gemini key (Groq fallback is OFF)' : 'No API key saved', 'nokey');
+        const strictW = strictOn() && !(opts && opts.noSearch);                 // strict mode applies to explanations, not to elimination logic
+        const geminiOnly = !!(opts && opts.geminiOnly) || strictW, needSearch = !!(opts && opts.requireSearch) || strictW;
+        if (!keys.length && (geminiOnly || !getAltKeys().length)) throw new ExplErr(strictW ? 'Strict mode: add a Gemini key (web search is required)' : (altOff() ? 'No Gemini key (Groq fallback is OFF)' : 'No API key saved'), 'nokey');
         let last = null;
         for (let k = 0; k < keys.length; k++) {
             const key = keys[(keyIdx + k) % keys.length];
             const models = await getModels(key);
-            for (const useSearch of ((opts && opts.noSearch) ? [false] : (opts && opts.requireSearch) ? [true] : [true, false])) {
+            for (const useSearch of ((opts && opts.noSearch) ? [false] : needSearch ? [true] : [true, false])) {
                 for (const model of models) {
                     try { const out = await callOnce(key, model, q, useSearch, opts); keyIdx = (keyIdx + k) % keys.length; out.model = model; out.provider = 'gemini'; return out; }
                     catch (e) { last = e; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
@@ -4492,7 +4503,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         }
         if (last && last.kind === 'quota') keyIdx = (keyIdx + 1) % keys.length;
         // All Gemini keys are exhausted / busy: try Groq and OpenRouter keys (no web search, so no sources)
-        if (opts && opts.geminiOnly) throw last || new ExplErr('Unknown error', 'other');
+        if (geminiOnly) throw last || new ExplErr('Unknown error', 'other');
         const alt = getAltKeys();
         for (const a of alt) {
             try { return await callOpenAIStyle(a, q, opts); } catch (e) { if (!last || last.kind !== 'key') last = e; }
