@@ -4293,6 +4293,13 @@ function confirmSubmitCbt() {
     let modelCache = null, lastMsg = 'Starting soon...';
     const skip = new Set(), priority = [], failCount = {};
     const isPaused = () => { try { return localStorage.getItem('expl_paused') === '1'; } catch (e) { return false; } };
+    // An explanation is UNVERIFIED when it was written without web search (Groq / OpenRouter, or Gemini without search) and has not been checked by Gemini yet.
+    const isUnverified = e => !!e && !e.verified && !e.edited && e.grounded === false;
+    window.explIsUnverified = isUnverified;
+    const altOff = () => { try { return localStorage.getItem('alt_fallback_off') === '1'; } catch (e) { return false; } };
+    const verifyOn = () => { try { return localStorage.getItem('expl_verify_on') === '1'; } catch (e) { return false; } };
+    const setVerifyOn = v => { try { localStorage.setItem('expl_verify_on', v ? '1' : '0'); } catch (e) {} };
+    const verifyPrio = [], vskip = new Set(), vfail = {};
     const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
     function openDb() { return new Promise((res, rej) => { const r = indexedDB.open('pyq_expl_v1', 1); r.onupgradeneeded = () => r.result.createObjectStore('e', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
@@ -4329,8 +4336,12 @@ function confirmSubmitCbt() {
         }
         const body = esc(e.text).replace(/\*\*(.+?)\*\*/g, '<b>$1</b>').replace(/\n/g, '<br>');
         const src = (e.sources || []).map(s => `<a href="${esc(s.uri)}" target="_blank" rel="noopener noreferrer" class="underline text-sky-300 hover:text-sky-200">${esc(s.title || 'source')}</a>`).join(' · ');
-        panel.innerHTML = `<div class="text-gray-200 leading-relaxed font-pyq-text">${body}</div>
-            ${src ? `<div class="text-gray-400">Sources: ${src}</div>` : (e.grounded === false ? '<div class="text-gray-500">Written without web search (no sources).</div>' : '')}
+        let badge = '';
+        if (e.verified) badge = `<div class="text-emerald-300"><i class="fa-solid fa-circle-check"></i> Verified by Gemini with web search${e.fixed ? ' - corrected: ' + esc(e.fixNote || 'details fixed') : ' - no changes needed'}</div>`;
+        else if (isUnverified(e)) badge = `<div class="text-amber-300"><i class="fa-solid fa-triangle-exclamation"></i> UNVERIFIED - written by ${esc(String(e.provider || e.model || 'AI').toUpperCase())} without web search. Gemini has not checked it yet.
+              <button type="button" onclick="explVerifyNow('${id}')" class="ml-2 px-2 py-0.5 rounded bg-amber-700/40 hover:bg-amber-600/50 text-amber-100 border border-amber-500/40">Verify with Gemini now</button></div>`;
+        panel.innerHTML = `${badge}<div class="text-gray-200 leading-relaxed font-pyq-text">${body}</div>
+            ${src ? `<div class="text-gray-400">Sources: ${src}</div>` : ''}
             <div class="flex gap-2 pt-1">
               <button type="button" onclick="explEdit('${id}')" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100"><i class="fa-solid fa-pen"></i> Edit</button>
               <button type="button" onclick="explPrioritize('${id}', true)" class="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-gray-100"><i class="fa-solid fa-rotate"></i> Regenerate</button>
@@ -4359,9 +4370,12 @@ function confirmSubmitCbt() {
         const el = document.getElementById('expl-status-bar'); if (!el) return;
         const total = pyqDatabase.length, done = pyqDatabase.filter(q => explMap[q.id]).length;
         const paused = isPaused();
-        el.innerHTML = `<span><i class="fa-solid fa-lightbulb text-sky-300"></i> Explanations ready: <b class="text-sky-300">${done}</b> / ${total}</span>
+        const unv = pyqDatabase.filter(q => isUnverified(explMap[q.id])).length;
+        el.innerHTML = `<span><i class="fa-solid fa-lightbulb text-sky-300"></i> Explanations ready: <b class="text-sky-300">${done}</b> / ${total}${unv ? ` &middot; <span class="text-amber-300">Unverified: <b>${unv}</b></span>` : ''}</span>
             <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}</span>
-            <span class="flex gap-3">
+            <span class="flex flex-wrap gap-3">
+              <button type="button" onclick="explToggleVerify()" class="text-emerald-300 hover:underline">${verifyOn() ? 'Stop verifying' : 'Verify with Gemini'}${unv ? ' (' + unv + ')' : ''}</button>
+              <button type="button" onclick="explToggleAlt()" class="text-amber-300 hover:underline">Groq fallback: ${altOff() ? 'OFF' : 'ON'}</button>
               <button type="button" onclick="explTogglePause()" class="text-sky-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button>
               <button type="button" onclick="explExport()" class="text-gray-400 hover:underline">Export</button>
               <button type="button" onclick="document.getElementById('expl-import-input').click()" class="text-gray-400 hover:underline">Import</button>
@@ -4374,8 +4388,26 @@ function confirmSubmitCbt() {
         updateBar();
     };
     window.explTogglePause = function () { try { localStorage.setItem('expl_paused', isPaused() ? '0' : '1'); } catch (e) {} updateBar(); if (!isPaused()) kick(500); };
+    window.explToggleAlt = function () {
+        try { localStorage.setItem('alt_fallback_off', altOff() ? '0' : '1'); } catch (e) {}
+        updateBar();
+        showPopup({ title: altOff() ? 'Groq / OpenRouter fallback is OFF' : 'Groq / OpenRouter fallback is ON', type: 'info', html: altOff()
+            ? '<div>When all Gemini keys are used up, the writers will WAIT for Gemini instead of writing explanations without web search.</div>'
+            : '<div>When all Gemini keys are used up, the writers will continue with Groq / OpenRouter. Those explanations are marked <b>UNVERIFIED</b> until Gemini checks them.</div>' });
+    };
+    window.explToggleVerify = function () {
+        if (!verifyOn() && !getKeys().length) { showPopup({ title: 'Gemini key needed', type: 'warn', html: '<div>Verification must be done by Gemini with web search. Add a Gemini API key in the API Key Vault first.</div>' }); return; }
+        setVerifyOn(!verifyOn()); updateBar(); if (verifyOn()) kick(500);
+    };
+    window.explVerifyNow = function (id) {
+        if (!getKeys().length) { showPopup({ title: 'Gemini key needed', type: 'warn', html: '<div>Verification must be done by Gemini with web search. Add a Gemini API key in the API Key Vault first.</div>' }); return; }
+        if (!verifyPrio.includes(id)) verifyPrio.unshift(id);
+        vskip.delete(id); vfail[id] = 0;
+        showPopup({ title: 'Queued', type: 'info', html: '<div>Gemini will check this explanation next (with web search) and fix anything wrong. Check back in a minute or two.</div>' });
+        kick(500);
+    };
     window.explExport = function () {
-        const blob = new Blob([JSON.stringify(Object.values(explMap))], { type: 'application/json' });
+        const blob = new Blob([JSON.stringify(Object.values(explMap).map(e => ({ ...e, needsVerify: isUnverified(e) })))], { type: 'application/json' });
         const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `UPSC_Explanations_${new Date().toISOString().slice(0, 10)}.json`; a.click();
     };
     window.explImport = function (ev) {
@@ -4445,14 +4477,14 @@ If reliable sources clearly disagree with the official key, add a last line star
     }
     async function generateFor(q, opts) {
         const keys = getKeys();
-        if (!keys.length && !getAltKeys().length) throw new ExplErr('No API key saved', 'nokey');
+        if (!keys.length && ((opts && opts.geminiOnly) || !getAltKeys().length)) throw new ExplErr(altOff() && !keys.length ? 'No Gemini key (Groq fallback is OFF)' : 'No API key saved', 'nokey');
         let last = null;
         for (let k = 0; k < keys.length; k++) {
             const key = keys[(keyIdx + k) % keys.length];
             const models = await getModels(key);
-            for (const useSearch of ((opts && opts.noSearch) ? [false] : [true, false])) {
+            for (const useSearch of ((opts && opts.noSearch) ? [false] : (opts && opts.requireSearch) ? [true] : [true, false])) {
                 for (const model of models) {
-                    try { const out = await callOnce(key, model, q, useSearch, opts); keyIdx = (keyIdx + k) % keys.length; out.model = model; return out; }
+                    try { const out = await callOnce(key, model, q, useSearch, opts); keyIdx = (keyIdx + k) % keys.length; out.model = model; out.provider = 'gemini'; return out; }
                     catch (e) { last = e; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
                 }
                 if (last && last.kind === 'key') break;
@@ -4460,6 +4492,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         }
         if (last && last.kind === 'quota') keyIdx = (keyIdx + 1) % keys.length;
         // All Gemini keys are exhausted / busy: try Groq and OpenRouter keys (no web search, so no sources)
+        if (opts && opts.geminiOnly) throw last || new ExplErr('Unknown error', 'other');
         const alt = getAltKeys();
         for (const a of alt) {
             try { return await callOpenAIStyle(a, q, opts); } catch (e) { if (!last || last.kind !== 'key') last = e; }
@@ -4467,6 +4500,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         throw last || new ExplErr('Unknown error', 'other');
     }
     function getAltKeys() {
+        if (altOff()) return [];
         let raw = ''; try { raw = localStorage.getItem('upsc_gemini_api_key') || ''; } catch (e) {}
         const ks = raw.split(/[\s,;]+/).map(k => k.trim()).filter(k => k.length > 10);
         return [...ks.filter(k => k.startsWith('gsk_')).map(k => ({ type: 'groq', key: k })), ...ks.filter(k => k.startsWith('sk-or-')).map(k => ({ type: 'or', key: k }))];
@@ -4496,10 +4530,51 @@ If reliable sources clearly disagree with the official key, add a last line star
                 const d = await r.json();
                 if (!r.ok || d.error) { last = new ExplErr((isGroq ? 'Groq' : 'OpenRouter') + ': ' + ((d.error && d.error.message) || 'HTTP ' + r.status), r.status === 429 ? 'quota' : 'other'); continue; }
                 const text = ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
-                if (text) return { text, sources: [], grounded: false, model };
+                if (text) return { text, sources: [], grounded: false, model, provider: isGroq ? 'groq' : 'openrouter' };
             } catch (e) { last = new ExplErr((isGroq ? 'Groq' : 'OpenRouter') + ': ' + (e.name === 'AbortError' ? 'Timed out' : e.message), 'net'); }
         }
         throw last || new ExplErr('No reply', 'other');
+    }
+
+    // ----- Gemini verification of unverified (no-search) explanations -----
+    function buildVerifyPrompt(q, e) {
+        const L = ['A', 'B', 'C', 'D'];
+        const keyL = String(q.officialKey || '').toUpperCase();
+        const ki = L.indexOf(keyL);
+        return `You are a strict UPSC fact-checker. Below is a DRAFT explanation that was written WITHOUT web search, so it may contain mistakes. Use Google Search to check EVERY fact in it against reliable sources. If anything is wrong, even slightly (a date, name, number, article, place, direction of a relationship, or faulty reasoning), correct it. If it is all correct, change nothing.
+
+Exam: ${q.exam} ${q.year}
+Question: ${q.question}
+${(q.options || []).map((o, i) => `(${L[i]}) ${o}`).join('\n')}
+Official answer key: ${keyL ? `(${keyL}) ${ki >= 0 ? q.options[ki] : ''}` : q.correctAnswer}
+
+DRAFT explanation:
+${e.text}
+
+Reply in exactly this layout (plain text, no preamble):
+Line 1: VERDICT: OK   (nothing needed changing)   or   VERDICT: FIXED - <what you changed, max 15 words>
+Then a blank line, then the final explanation (the corrected one, or the draft unchanged if OK) in the same format as the draft: Answer / Why it is correct / Why others are wrong / Remember. Max 220 words. Write in your own words.
+If reliable sources clearly disagree with the official key, keep the Answer as per the key and add a last line starting "Note:".`;
+    }
+    async function verifyOne(q) {
+        const e = explMap[q.id];
+        const out = await limited(q, { prompt: buildVerifyPrompt(q, e), requireSearch: true, geminiOnly: true, maxTokens: 4096 });
+        const m = out.text.match(/^\s*VERDICT:\s*(OK|FIXED)\b[\s\-\u2013:]*(.*)$/im);
+        if (!m) throw new ExplErr('Verifier reply had no VERDICT line', 'other');
+        const fixed = m[1].toUpperCase() === 'FIXED';
+        const body = out.text.slice(m.index + m[0].length).trim();
+        if (fixed && body.length < 40) throw new ExplErr('Verifier returned no corrected text', 'other');
+        await putExpl({ ...e, text: fixed ? body : e.text, prevText: fixed ? e.text : e.prevText, sources: out.sources, grounded: true,
+            verified: true, fixed, fixNote: fixed ? m[2].trim().slice(0, 160) : '', needsVerify: false, draftBy: e.provider || e.model || 'unknown',
+            model: out.model, provider: 'gemini', verifiedTs: Date.now() });
+        if (fixed && window.elimInvalidate) window.elimInvalidate(q.id);   // elimination logic built on wrong facts is rebuilt
+        renderPanel(q.id);
+        return fixed;
+    }
+    function nextVerifyTarget() {
+        while (verifyPrio.length) { const id = verifyPrio.shift(); const q = pyqDatabase.find(x => x.id === id); if (q && isUnverified(explMap[id])) return q; }
+        if (!verifyOn()) return null;
+        return pyqDatabase.find(q => isUnverified(explMap[q.id]) && !vskip.has(q.id)) || null;
     }
 
     // ----- Scheduler -----
@@ -4516,12 +4591,33 @@ If reliable sources clearly disagree with the official key, add a last line star
         try {
             if (isPaused()) { updateBar(); delay = 30000; return; }
             if (!getKeys().length && !getAltKeys().length) { lastMsg = 'Add a Gemini API key in Settings to start'; updateBar(); delay = 60000; return; }
+            const vq = nextVerifyTarget();
+            if (vq) {
+                if (!getKeys().length) { lastMsg = 'Verification needs a Gemini API key'; updateBar(); delay = 60000; return; }
+                lastMsg = `Gemini is verifying... (${vq.exam} ${vq.year})`; updateBar();
+                try {
+                    const fixed = await verifyOne(vq);
+                    backoff = 0; consecutiveErrors = 0;
+                    lastMsg = fixed ? 'Verified - one explanation corrected' : 'Verified - no changes needed'; updateBar();
+                } catch (e) {
+                    consecutiveErrors++;
+                    if (e.kind === 'quota' || e.kind === 'busy') {
+                        // Gemini is limited: stop verifying so normal writing (incl. Groq fallback) keeps going
+                        setVerifyOn(false); verifyPrio.length = 0;
+                        lastMsg = 'Verification stopped: Gemini limit reached. Press "Verify with Gemini" again when Gemini is back'; delay = EXPL_DELAY_MS;
+                    } else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check your keys in Settings'; }
+                    else { vfail[vq.id] = (vfail[vq.id] || 0) + 1; if (vfail[vq.id] >= 3) vskip.add(vq.id); lastMsg = 'Verification failed (' + String(e.message).slice(0, 70) + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
+                    console.warn('[verify]', e.message);
+                    updateBar();
+                }
+                return;
+            }
             const q = nextTarget();
             if (!q) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
             lastMsg = `Writing explanation... (${q.exam} ${q.year})`; updateBar();
             try {
                 const out = await limited(q);
-                await putExpl({ id: q.id, text: out.text, sources: out.sources, grounded: out.grounded, model: out.model, ts: Date.now() });
+                await putExpl({ id: q.id, text: out.text, sources: out.sources, grounded: out.grounded, model: out.model, provider: out.provider || 'gemini', needsVerify: out.grounded === false, ts: Date.now() });
                 renderPanel(q.id); backoff = 0; consecutiveErrors = 0;
                 lastMsg = 'Working in the background'; updateBar();
             } catch (e) {
@@ -4924,6 +5020,11 @@ If reliable sources clearly disagree with the official key, add a last line star
         return `<div id="elim-${q.id}" class="text-gray-300 leading-relaxed font-pyq-text text-xs space-y-0.5">${inner}</div>`;
     };
     function refreshBox(id) { const el = document.getElementById('elim-' + id); const q = pyqDatabase.find(x => x.id === id); if (el && q) el.outerHTML = elimBoxHtml(q); }
+    window.elimInvalidate = function (id) {
+        delete elimMap[id]; delete fails[id]; skip.delete(id);
+        if (idb) { try { idb.transaction('e', 'readwrite').objectStore('e').delete(id); } catch (e) {} }
+        try { refreshBox(id); } catch (e) {}
+    };
     window.elimRegen = function (id) { delete fails[id]; skip.delete(id); window._elimPriority = id; showPopup({ title: 'Queued', type: 'info', html: '<div>A new elimination analysis will be written next. Check back in a minute.</div>' }); kick(500); };
     window.elimEdit = function (id) {
         const e = elimMap[id] || { id, text: '' };
@@ -5009,7 +5110,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
     // ---------- Scheduler ----------
     function next() {
         if (window._elimPriority) { const id = window._elimPriority; window._elimPriority = null; const q = pyqDatabase.find(x => x.id === id); if (q) return q; }
-        const ok = q => inRange(q) && ready(q) && !elimMap[q.id] && !skip.has(q.id) && !!(window.explMap && explMap[q.id]);
+        const ok = q => inRange(q) && ready(q) && !elimMap[q.id] && !skip.has(q.id) && !!(window.explMap && explMap[q.id]) && !(window.explIsUnverified && explIsUnverified(explMap[q.id]));
         let shown = []; try { shown = _renderQs || []; } catch (e) {}
         return shown.find(ok) || pyqDatabase.find(ok);
     }
@@ -5028,7 +5129,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
             if (isPaused()) { bar(); delay = 30000; return; }
             if (typeof aiGenerate !== 'function' || !aiHasKeys()) { lastMsg = 'Add an API key in Settings to start'; bar(); delay = 60000; return; }
             const q = next();
-            if (!q) { const waiting = pyqDatabase.some(x => inRange(x) && ready(x) && !elimMap[x.id]); lastMsg = waiting ? 'Waiting for explanations (facts) to be written first' : 'All questions done'; bar(); delay = waiting ? 20000 : 60000; return; }
+            if (!q) { const waiting = pyqDatabase.some(x => inRange(x) && ready(x) && !elimMap[x.id]); lastMsg = waiting ? 'Waiting for verified explanations (facts) - unverified Groq ones need Gemini to check them' : 'All questions done'; bar(); delay = waiting ? 20000 : 60000; return; }
             lastMsg = `Writing... (${q.exam} ${q.year})`; bar();
             try {
                 const out = await aiGenerate(q, { prompt: buildPrompt(q), noSearch: true, maxTokens: 3000 });
