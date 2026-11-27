@@ -4610,51 +4610,200 @@ If reliable sources clearly disagree with the official key, add a last line star
     }
     window.setMarkFilter = function (k) { window._markFilter = (window._markFilter === k) ? null : k; renderChips(); applyFilters(); };
 
-    // ---------- Insights tab ----------
-    const state = { exam: 'ALL' };
-    window.renderInsights = function () {
-        const root = document.getElementById('insights-root'); if (!root) return;
-        const exams = [...new Set(pyqDatabase.map(q => q.exam))].sort();
-        const qs = pyqDatabase.filter(q => state.exam === 'ALL' || q.exam === state.exam);
-        const years = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
-        const bySubj = {}, cell = {}, themeStat = {};
+    // ---------- Insights tab (PYQ analysis | My test performance) ----------
+    const state = { view: 'pyq', exam: 'ALL', from: '', to: '', subject: 'ALL', share: false };
+    const SUBJ_MAP = { 'economy': 'Economics', 'ancient and medieval': 'Ancient & Medieval', 'medieval history': 'Ancient & Medieval', 'ancient history': 'Ancient & Medieval', 'international relations': 'Int. Relations', 'arts': 'Arts & Culture', 'art & culture': 'Arts & Culture', 'art and culture': 'Arts & Culture', 'agriculture': 'Economics', 'governance': 'Polity', 'sports': 'Miscellaneous', 'current affairs': 'Miscellaneous', 'science and technology': 'Science & Tech', 'science & technology': 'Science & Tech' };
+    function canonSubject(s) { s = String(s || '').trim(); if (!s) return 'Miscellaneous'; if (s.includes('/')) s = s.split('/')[0].trim(); return SUBJ_MAP[s.toLowerCase()] || s; }
+    const subjectNameSet = () => { const st = new Set(); Object.keys(TAXONOMY).forEach(k => st.add(k.toLowerCase())); Object.keys(SUBJ_MAP).forEach(k => st.add(k)); Object.values(SUBJ_MAP).forEach(v => st.add(v.toLowerCase())); return st; };
+    const isJunkExam = (e, set) => set.has(String(e || '').trim().toLowerCase());
+    function stmtsOf(t) {
+        const parts = String(t).split(/(?:(?<=\s)|^)(\d)\s*[.)]\s+(?=[A-Z])/); const o = [];
+        for (let i = 1; i < parts.length - 1; i += 2) o.push([+parts[i], parts[i + 1]]);
+        return (o.length >= 2 && o.every((x, i) => x[0] === i + 1)) ? o : [];
+    }
+    const keyIdx = q => 'ABCD'.indexOf(String(q.officialKey || '').toUpperCase());
+    function stmtTruth(q) {            // -> {st:[[n,text,isCorrect]]} or null
+        const st = stmtsOf(q.question); if (st.length < 2 || !q.options || q.options.length !== 4 || keyIdx(q) < 0) return null;
+        if (!q.options.every(o => /\d|neither|none|all|both/i.test(o) && String(o).length < 60)) return null;
+        const ko = String(q.options[keyIdx(q)]).toLowerCase(); let tr;
+        if (/neither|none|no statement/.test(ko)) tr = new Set(); else { const nums = (ko.match(/\d/g) || []).map(Number); if (!nums.length) return null; tr = new Set(nums); }
+        const tail = String(q.question).toLowerCase().split('which').pop();
+        const inv = /(not correct|incorrect|not true|false|wrong|not applicable)/.test(tail);
+        return { st: st.map(([n, t]) => [n, t, tr.has(n) !== inv]) };
+    }
+    function fmtOf(q) {
+        const t = String(q.question);
+        if (/statement[\s-]*(i|1)\b[\s\S]*statement[\s-]*(ii|2)\b/i.test(t)) return 'Statement I / II';
+        if (/how many of the (above|following)/i.test(t)) return 'How many are correct';
+        if (/\bpairs?\b|match the following|match list|list-?i\b/i.test(t)) return 'Pairs / Matching';
+        if (stmtsOf(t).length) return 'Numbered statements';
+        return 'Direct / other';
+    }
+    const SIGS = [
+        ['Extreme words (only, always, never, exclusively…)', /\b(only|always|never|exclusively|solely|entirely|completely|purely|absolutely|every|invariably)\b/i],
+        ['Extreme trend words (drastically, steadily, consistently…)', /\b(drastically|enormously|steadily|consistently|continuously)\b/i],
+        ['Negation (does not, cannot, not)', /\b(does not|do not|cannot|can not|is not|are not|not)\b/i],
+        ['Hedge / soft words (about, largely, can, may, upto…)', /\b(about|largely|nearly|approximately|up to|upto|mostly|generally|can|may|could|at least|some)\b/i],
+        ['Exact figure (%, km, million…)', /\b\d[\d,.]*\s*(%|per cent|percent|km|million|billion|crore|lakh|years?|metres?)\b/i],
+        ['Endemic / native', /\b(endemic|native)\b/i],
+        ['Binding / mandatory', /\b(binding|mandatory|compulsory|obligatory)\b/i],
+        ['Soft verbs (influence, encourage, inspired)', /\b(influence|encourage|inspired|promote|facilitate)\b/i],
+        ['Office names (President, Governor, Ministry…)', /\b(president|prime minister|governor|chief minister|speaker|ministry|minister)\b/i],
+        ['Motto / theme', /\b(motto|theme|slogan)\b/i],
+        ['UPSC favourites (Akbar, Ashoka, Vijayanagara, port)', /\b(akbar|ashoka|asoka|vijayanagar|vijayanagara|port|ports)\b/i],
+        ['Very long (30+ words)', { test: t => String(t).split(/\s+/).length >= 30 }]
+    ];
+    function collectItems(qs) {
+        const stmt = [], opt = [];
         qs.forEach(q => {
-            const s = q.subject || 'Miscellaneous', y = Number(q.year);
-            bySubj[s] = (bySubj[s] || 0) + 1;
-            cell[s + '|' + y] = (cell[s + '|' + y] || 0) + 1;
-            const tk = s + '||' + (q.theme || 'General');
-            const t = themeStat[tk] = themeStat[tk] || { s, theme: q.theme || 'General', total: 0, y: {} };
-            t.total++; t.y[y] = (t.y[y] || 0) + 1;
+            const s = canonSubject(q.subject), tt = stmtTruth(q);
+            if (tt) tt.st.forEach(([n, t, c]) => stmt.push({ s, t, c }));
+            else if (q.options && q.options.length === 4 && keyIdx(q) >= 0 && stmtsOf(q.question).length === 0) q.options.forEach((o, i) => opt.push({ s, t: String(o), c: i === keyIdx(q) }));
         });
-        const subjects = Object.keys(bySubj).sort((a, b) => bySubj[b] - bySubj[a]);
-        const maxS = Math.max(1, ...Object.values(bySubj));
-        let max = 1; Object.values(cell).forEach(v => { if (v > max) max = v; });
-        const cols = years.slice(-20);
-        const recentYears = years.slice(-5), priorYears = years.slice(0, -5);
-        const themes = Object.values(themeStat).map(t => {
+        return { stmt, opt };
+    }
+    const pct = (a, n) => n ? Math.round(a / n * 100) : 0;
+    function sigTable(items, title, note) {
+        if (items.length < 30) return `<div class="text-xs text-gray-500">Not enough ${title.toLowerCase()} in this selection (${items.length}).</div>`;
+        const base = items.filter(i => i.c).length / items.length;
+        const rows = SIGS.map(([name, rx]) => {
+            const f = items.filter(i => rx.test(i.t)); const n = f.length; const p = n ? f.filter(i => i.c).length / n : 0;
+            let verdict, col;
+            if (n < 15) { verdict = 'too few to judge'; col = '#6b7280'; }
+            else if (p - base <= -0.12) { verdict = 'Strong: flagged ones are usually WRONG'; col = '#fb7185'; }
+            else if (p - base <= -0.06) { verdict = 'Mild: leans wrong'; col = '#fbbf24'; }
+            else if (p - base >= 0.06) { verdict = 'Leans RIGHT'; col = '#34d399'; }
+            else { verdict = 'No real signal'; col = '#9ca3af'; }
+            return `<tr class="border-t border-gray-700/40"><td class="py-1 pr-2 text-gray-200">${esc(name)}</td><td>${n}</td><td style="color:${col}">${n ? Math.round(p * 100) + '%' : '-'}</td><td style="color:${col}">${esc(verdict)}</td></tr>`;
+        }).join('');
+        const subs = [...new Set(items.map(i => i.s))].filter(s => items.filter(i => i.s === s).length >= 40).sort();
+        const keySigs = [0, 3, 2, 4];
+        const matrix = subs.length ? `<div class="text-[11px] text-gray-400 mt-3 mb-1">By subject (% true, n in brackets; base = all ${title.toLowerCase()} of that subject)</div><div style="overflow-x:auto"><table class="text-xs"><thead><tr class="text-gray-400 text-left"><th class="pr-3">Subject</th><th class="pr-3">Base</th>${keySigs.map(k => `<th class="pr-3">${esc(SIGS[k][0].split(' (')[0])}</th>`).join('')}</tr></thead><tbody>` + subs.map(s => {
+            const it = items.filter(i => i.s === s), b = pct(it.filter(i => i.c).length, it.length);
+            return `<tr class="border-t border-gray-700/40"><td class="pr-3 py-1 text-gray-200">${esc(s)}</td><td class="pr-3">${b}% (${it.length})</td>${keySigs.map(k => { const f = it.filter(i => SIGS[k][1].test(i.t)); return `<td class="pr-3" style="color:${f.length < 10 ? '#6b7280' : (pct(f.filter(i => i.c).length, f.length) - b <= -12 ? '#fb7185' : pct(f.filter(i => i.c).length, f.length) - b >= 8 ? '#34d399' : '#d1d5db')}">${f.length ? pct(f.filter(i => i.c).length, f.length) + '% (' + f.length + ')' : '-'}</td>`; }).join('')}</tr>`;
+        }).join('') + '</tbody></table></div>' : '';
+        return `<div class="text-xs text-gray-400 mb-2">${items.length} ${title.toLowerCase()} analysed. On average <b class="text-amber-300">${Math.round(base * 100)}%</b> are ${note}.</div><table class="w-full text-xs"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Pattern</th><th>Items with it</th><th>% ${note}</th><th>Verdict</th></tr></thead><tbody>${rows}</tbody></table>${matrix}`;
+    }
+    function currentQs() {
+        const set = subjectNameSet();
+        return pyqDatabase.filter(q => {
+            if (state.exam !== 'ALL' && q.exam !== state.exam) return false;
+            const y = Number(q.year); if (state.from && !(y >= Number(state.from))) return false; if (state.to && !(y <= Number(state.to))) return false;
+            if (state.subject !== 'ALL' && canonSubject(q.subject) !== state.subject) return false;
+            return true;
+        });
+    }
+    function card(title, inner, sub) { return `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm ${sub ? 'mb-1' : 'mb-3'}">${title}</h3>${sub ? `<div class="text-[11px] text-gray-500 mb-3">${sub}</div>` : ''}${inner}</div>`; }
+    function themeRows(qs, years) {
+        const recentYears = years.slice(-5), priorYears = years.slice(0, -5), map = {};
+        qs.forEach(q => { const s = canonSubject(q.subject), th = q.theme || 'General', k = s + '||' + th, y = Number(q.year); const t = map[k] = map[k] || { s, theme: th, total: 0, y: {} }; t.total++; t.y[y] = (t.y[y] || 0) + 1; });
+        const maxY = years[years.length - 1];
+        return Object.values(map).map(t => {
             const rec = recentYears.reduce((a, y) => a + (t.y[y] || 0), 0), pri = priorYears.reduce((a, y) => a + (t.y[y] || 0), 0);
             const rr = rec / Math.max(1, recentYears.length), pr = pri / Math.max(1, priorYears.length);
             const trend = !priorYears.length ? '' : (rr > pr * 1.3 && rec >= 2) ? 'up' : (rr < pr * 0.7 && pri >= 3) ? 'down' : 'flat';
-            return { ...t, rec, pri, trend };
-        }).sort((a, b) => b.total - a.total).slice(0, 20);
-        const rep = buildRep().groups.map(g => ({ g, n: new Set(g.map(q => String(q.year))).size })).sort((a, b) => b.n - a.n).slice(0, 8);
-
-        let h = `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300"><label>Exam: <select id="ins-exam" class="bg-black/30 border border-gray-600 rounded-lg px-2 py-1">${['ALL', ...exams].map(e => `<option value="${esc(e)}" ${e === state.exam ? 'selected' : ''}>${e === 'ALL' ? 'All exams' : esc(e)}</option>`).join('')}</select></label>
-            <span><b class="text-amber-300">${qs.length}</b> questions &middot; <b class="text-amber-300">${years.length}</b> years${years.length ? ` (${years[0]}–${years[years.length - 1]})` : ''}</span></div>`;
-        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-3">Questions by subject</h3>` +
-            subjects.map(s => `<div class="flex items-center gap-2 text-xs mb-1.5"><div class="w-36 shrink-0 text-gray-300 truncate">${esc(s)}</div><div class="flex-1 bg-black/30 rounded h-4"><div style="width:${(bySubj[s] / maxS * 100).toFixed(1)}%;background:#f59e0b;height:100%;border-radius:4px"></div></div><div class="w-24 text-right text-gray-300">${bySubj[s]} <span class="text-gray-500">(${(bySubj[s] / Math.max(1, years.length)).toFixed(1)}/yr)</span></div></div>`).join('') + `</div>`;
-        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-3">Subject &times; Year (number of questions)</h3><div style="overflow-x:auto"><table class="text-xs border-collapse"><thead><tr><th class="text-left pr-3 pb-1 text-gray-400">Subject</th>${cols.map(y => `<th class="px-1 pb-1 text-gray-400 font-normal">${String(y).slice(-2)}</th>`).join('')}</tr></thead><tbody>` +
-            subjects.map(s => `<tr><td class="pr-3 py-0.5 text-gray-300 whitespace-nowrap">${esc(s)}</td>${cols.map(y => { const v = cell[s + '|' + y] || 0; return `<td title="${esc(s)} ${y}: ${v}" style="background:rgba(245,158,11,${v ? (0.12 + 0.75 * v / max).toFixed(2) : 0});min-width:26px;text-align:center;color:#e5e7eb;border:1px solid rgba(255,255,255,.04)">${v || ''}</td>`; }).join('')}</tr>`).join('') + `</tbody></table></div><div class="text-[11px] text-gray-500 mt-2">Columns are years (last 2 digits). Darker = more questions.</div></div>`;
-        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-1">Most asked micro-themes</h3><div class="text-[11px] text-gray-500 mb-3">Trend compares the last ${recentYears.length} years with the earlier years.</div><table class="w-full text-xs"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Theme</th><th>Subject</th><th>Total</th><th>Last ${recentYears.length} yrs</th><th>Trend</th><th></th></tr></thead><tbody>` +
-            themes.map(t => `<tr class="border-t border-gray-700/40"><td class="py-1 pr-2 text-gray-200">${esc(t.theme)}</td><td class="text-gray-400">${esc(t.s)}</td><td>${t.total}</td><td>${t.rec}</td><td>${t.trend === 'up' ? '<span class="text-emerald-400">&#9650; Rising</span>' : t.trend === 'down' ? '<span class="text-rose-400">&#9660; Falling</span>' : t.trend === 'flat' ? '<span class="text-gray-500">Steady</span>' : ''}</td><td><button type="button" data-go-subject="${esc(t.s)}" data-go-theme="${esc(t.theme)}" class="text-amber-300 hover:underline">View</button></td></tr>`).join('') + `</tbody></table></div>`;
-        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-2">Questions repeated across years</h3>` + (rep.length ? `<div class="text-xs text-gray-400 mb-2">${buildRep().groups.length} questions have appeared in more than one year. <button type="button" id="ins-show-repeat" class="text-amber-300 hover:underline">Show them all in Theme Explorer</button></div><ul class="text-xs space-y-1.5">` +
-            rep.map(r => `<li class="border-t border-gray-700/40 pt-1.5"><span class="text-purple-300 font-bold">${r.n} years</span> (${r.g.map(q => esc(lbl(q))).join(', ')}) &mdash; <span class="text-gray-300">${esc(String(r.g[0].question).replace(/\s+/g, ' ').slice(0, 140))}…</span></li>`).join('') + '</ul>' : '<div class="text-xs text-gray-500">No repeated questions found yet.</div>') + `</div>`;
-        h += weakHtml();
+            const yrsAsked = Object.keys(t.y).map(Number), last = Math.max(...yrsAsked);
+            const in5 = recentYears.filter(y => t.y[y]).length;
+            return { ...t, rec, pri, trend, last, gap: maxY - last, in5, n5: recentYears.length };
+        });
+    }
+    function pyqView(qs) {
+        const years = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
+        const bySubj = {}, cell = {}, yearTot = {};
+        qs.forEach(q => { const s = canonSubject(q.subject), y = Number(q.year); bySubj[s] = (bySubj[s] || 0) + 1; cell[s + '|' + y] = (cell[s + '|' + y] || 0) + 1; yearTot[y] = (yearTot[y] || 0) + 1; });
+        const subjects = Object.keys(bySubj).sort((a, b) => bySubj[b] - bySubj[a]), maxS = Math.max(1, ...Object.values(bySubj));
+        const cols = years.slice(-20);
+        let h = '';
+        // subject bars
+        h += card('Questions by subject', subjects.map(s => `<div class="flex items-center gap-2 text-xs mb-1.5"><div class="w-36 shrink-0 text-gray-300 truncate">${esc(s)}</div><div class="flex-1 bg-black/30 rounded h-4"><div style="width:${(bySubj[s] / maxS * 100).toFixed(1)}%;background:#f59e0b;height:100%;border-radius:4px"></div></div><div class="w-28 text-right text-gray-300">${bySubj[s]} <span class="text-gray-500">(${pct(bySubj[s], qs.length)}% &middot; ${(bySubj[s] / Math.max(1, years.length)).toFixed(1)}/yr)</span></div></div>`).join(''));
+        // grid: counts or share
+        let max = 1; Object.entries(cell).forEach(([k, v]) => { const y = +k.split('|')[1]; const val = state.share ? v / yearTot[y] : v; if (val > max) max = val; });
+        const earlier = years.slice(0, -5), recent = years.slice(-5);
+        const shareOf = (s, ys) => { const t = ys.reduce((a, y) => a + (yearTot[y] || 0), 0); return t ? ys.reduce((a, y) => a + (cell[s + '|' + y] || 0), 0) / t * 100 : 0; };
+        const grid = `<div class="flex gap-2 mb-2 text-xs"><button type="button" data-share="0" class="px-2.5 py-1 rounded-lg border ${state.share ? 'border-gray-600 text-gray-300' : 'bg-amber-600 text-white border-amber-400'}">Counts</button><button type="button" data-share="1" class="px-2.5 py-1 rounded-lg border ${state.share ? 'bg-amber-600 text-white border-amber-400' : 'border-gray-600 text-gray-300'}">Share of the paper (%)</button></div><div style="overflow-x:auto"><table class="text-xs border-collapse"><thead><tr><th class="text-left pr-3 pb-1 text-gray-400">Subject</th>${cols.map(y => `<th class="px-1 pb-1 text-gray-400 font-normal">${String(y).slice(-2)}</th>`).join('')}${earlier.length ? '<th class="pl-3 pb-1 text-gray-400 font-normal">Last 5 yrs vs before</th>' : ''}</tr></thead><tbody>` +
+            subjects.map(s => `<tr><td class="pr-3 py-0.5 text-gray-300 whitespace-nowrap">${esc(s)}</td>${cols.map(y => { const v = cell[s + '|' + y] || 0, val = state.share ? (yearTot[y] ? v / yearTot[y] : 0) : v; return `<td title="${esc(s)} ${y}: ${v} (${pct(v, yearTot[y] || 0)}%)" style="background:rgba(245,158,11,${val ? (0.12 + 0.75 * val / max).toFixed(2) : 0});min-width:28px;text-align:center;color:#e5e7eb;border:1px solid rgba(255,255,255,.04)">${v ? (state.share ? Math.round(val * 100) : v) : ''}</td>`; }).join('')}${earlier.length ? (() => { const a = shareOf(s, recent), b = shareOf(s, earlier), d = a - b; return `<td class="pl-3 whitespace-nowrap" style="color:${d > 1.5 ? '#34d399' : d < -1.5 ? '#fb7185' : '#9ca3af'}">${a.toFixed(0)}% vs ${b.toFixed(0)}% ${d > 1.5 ? '&#9650;' : d < -1.5 ? '&#9660;' : ''}</td>`; })() : ''}</tr>`).join('') + `</tbody></table></div><div class="text-[11px] text-gray-500 mt-2">Columns are years (last 2 digits). Share view = % of that year's paper, so you can see real shifts even when the paper size changes.</div>`;
+        h += card('Subject &times; Year', grid);
+        // themes with trend and gaps
+        const themes = themeRows(qs, years).sort((a, b) => b.total - a.total).slice(0, 25);
+        h += card('Most asked micro-themes: trend and gaps', `<table class="w-full text-xs"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Theme</th><th>Subject</th><th>Total</th><th>Asked in last 5 yrs</th><th>Last asked</th><th>Trend</th><th></th></tr></thead><tbody>` +
+            themes.map(t => `<tr class="border-t border-gray-700/40"><td class="py-1 pr-2 text-gray-200">${esc(t.theme)}</td><td class="text-gray-400">${esc(t.s)}</td><td>${t.total}</td><td>${t.in5}/${t.n5} yrs (${t.rec} q)</td><td>${t.last}${t.gap ? ` <span class="text-gray-500">(${t.gap} yr ago)</span>` : ''}</td><td>${t.trend === 'up' ? '<span class="text-emerald-400">&#9650; Rising</span>' : t.trend === 'down' ? '<span class="text-rose-400">&#9660; Falling</span>' : t.trend === 'flat' ? '<span class="text-gray-500">Steady</span>' : ''}</td><td><button type="button" data-go-subject="${esc(t.s)}" data-go-theme="${esc(t.theme)}" class="text-amber-300 hover:underline">View</button></td></tr>`).join('') + `</tbody></table>`,
+            'This describes what happened; UPSC does not follow a rotation, so a long gap is not a prediction.');
+        // question formats
+        const fm = {}, fmYear = {}; qs.forEach(q => { const f = fmtOf(q), y = Number(q.year); fm[f] = (fm[f] || 0) + 1; fmYear[f + '|' + y] = (fmYear[f + '|' + y] || 0) + 1; });
+        const fmts = Object.keys(fm).sort((a, b) => fm[b] - fm[a]), fcols = years.slice(-15);
+        const cnt = {}; qs.forEach(q => { const tt = stmtTruth(q); if (!tt) return; const n = tt.st.length, t = tt.st.filter(x => x[2]).length; (cnt[n] = cnt[n] || {})[t] = (cnt[n][t] || 0) + 1; });
+        const cntRows = Object.keys(cnt).map(Number).sort().filter(n => Object.values(cnt[n]).reduce((a, b) => a + b, 0) >= 10).map(n => { const tot = Object.values(cnt[n]).reduce((a, b) => a + b, 0); return `<tr class="border-t border-gray-700/40"><td class="py-1 pr-3">${n} statements</td><td class="pr-3">${tot} questions</td><td>${Object.keys(cnt[n]).map(Number).sort().map(t => `${t} true: <b class="text-amber-300">${pct(cnt[n][t], tot)}%</b>`).join(' &nbsp;|&nbsp; ')}</td></tr>`; }).join('');
+        h += card('Question formats over the years', `<table class="text-xs mb-3"><thead><tr class="text-gray-400 text-left"><th class="pr-3">Format</th><th class="pr-3">Total</th>${fcols.map(y => `<th class="px-1 font-normal">${String(y).slice(-2)}</th>`).join('')}</tr></thead><tbody>` +
+            fmts.map(f => `<tr class="border-t border-gray-700/40"><td class="pr-3 py-1 text-gray-200 whitespace-nowrap">${esc(f)}</td><td class="pr-3">${fm[f]} (${pct(fm[f], qs.length)}%)</td>${fcols.map(y => { const v = fmYear[f + '|' + y] || 0, tot = yearTot[y] || 1; return `<td style="text-align:center;min-width:30px;background:rgba(56,189,248,${v ? (0.1 + 0.6 * v / tot).toFixed(2) : 0})" title="${esc(f)} ${y}: ${v}">${v ? Math.round(v / tot * 100) : ''}</td>`; }).join('')}</tr>`).join('') + `</tbody></table>` +
+            (cntRows ? `<div class="text-[11px] text-gray-400 mb-1">How many statements are usually TRUE (from questions where the answer could be worked out)</div><table class="text-xs"><tbody>${cntRows}</tbody></table>` : ''),
+            'Cells in the year columns show % of that year\'s paper. Format is detected from the question wording, so a few may be misfiled.');
+        // pattern effectiveness
+        const it = collectItems(qs);
+        h += card('Do your elimination patterns really work? (tested on your own PYQs)',
+            `<div class="text-xs font-bold text-gray-300 mb-1">Statements (from numbered-statement questions)</div>${sigTable(it.stmt, 'Statements', 'TRUE')}<div class="text-xs font-bold text-gray-300 mt-5 mb-1">Options (plain 4-option questions)</div>${sigTable(it.opt, 'Options', 'the CORRECT answer')}`,
+            'Read it as odds, not rules: "Strong" means flagged statements were wrong far more often than average. Items with fewer than 15 cases are not judged.');
+        // repeats
+        const R = buildRep().groups.map(g => ({ g, n: new Set(g.map(q => String(q.year))).size })).sort((a, b) => b.n - a.n).slice(0, 8);
+        h += card('Questions repeated across years', R.length ? `<div class="text-xs text-gray-400 mb-2">${buildRep().groups.length} questions have appeared in more than one year. <button type="button" id="ins-show-repeat" class="text-amber-300 hover:underline">Show them all in Theme Explorer</button></div><ul class="text-xs space-y-1.5">` + R.map(r => `<li class="border-t border-gray-700/40 pt-1.5"><span class="text-purple-300 font-bold">${r.n} years</span> (${r.g.map(q => esc(lbl(q))).join(', ')}) &mdash; <span class="text-gray-300">${esc(String(r.g[0].question).replace(/\s+/g, ' ').slice(0, 140))}…</span></li>`).join('') + '</ul>' : '<div class="text-xs text-gray-500">No repeated questions found yet.</div>');
+        return h;
+    }
+    function perfView(qs) {
+        const years = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
+        const at = getAttempts(), tested = {};
+        at.forEach(a => a.items.forEach(i => { const k = canonSubject(i.subj) + '||' + i.theme; const o = tested[k] = tested[k] || { r: 0, w: 0 }; if (i.st === 'right') o.r++; else if (i.st === 'wrong') o.w++; }));
+        const th = themeRows(qs, years), maxT = Math.max(1, ...th.map(t => t.total)), maxR = Math.max(1, ...th.map(t => t.rec));
+        const rows = th.map(t => { const x = tested[t.s + '||' + t.theme], n = x ? x.r + x.w : 0, acc = n >= 2 ? x.r / n : null; const w = acc === null ? 0.5 : 1 - acc; return { ...t, n, acc, score: Math.round(100 * (0.5 * t.total / maxT + 0.3 * t.rec / maxR + 0.2 * w)) }; }).sort((a, b) => b.score - a.score).slice(0, 25);
+        let h = card('Study priority list', `<table class="w-full text-xs"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Theme</th><th>Subject</th><th>PYQs (total / last 5 yrs)</th><th>Your test accuracy</th><th>Priority</th><th></th></tr></thead><tbody>` +
+            rows.map(t => `<tr class="border-t border-gray-700/40"><td class="py-1 pr-2 text-gray-200">${esc(t.theme)}</td><td class="text-gray-400">${esc(t.s)}</td><td>${t.total} / ${t.rec}</td><td style="color:${t.acc === null ? '#6b7280' : t.acc < .5 ? '#fb7185' : t.acc < .7 ? '#fbbf24' : '#34d399'}">${t.acc === null ? 'not tested yet' : Math.round(t.acc * 100) + '% (' + t.n + ' q)'}</td><td><b class="text-amber-300">${t.score}</b>${t.acc !== null && t.acc < .6 && t.total >= 5 ? ' <span class="text-rose-300">high-yield &amp; weak</span>' : ''}</td><td><button type="button" data-go-subject="${esc(t.s)}" data-go-theme="${esc(t.theme)}" class="text-amber-300 hover:underline">PYQs</button></td></tr>`).join('') + `</tbody></table>`,
+            'Priority = 50% how often the theme is asked + 30% how often in the last 5 years + 20% how weak you are (untested themes count as 50% weak). This is the only place PYQ data and your test results are combined.');
+        return h + weakHtml();
+    }
+    window.renderInsights = function () {
+        const root = document.getElementById('insights-root'); if (!root) return;
+        const set = subjectNameSet();
+        const all = pyqDatabase;
+        const examCount = {}; all.forEach(q => { examCount[q.exam] = (examCount[q.exam] || 0) + 1; });
+        const realExams = Object.keys(examCount).filter(e => e && !isJunkExam(e, set)).sort((a, b) => examCount[b] - examCount[a]);
+        const junk = all.filter(q => isJunkExam(q.exam, set));
+        const allYears = [...new Set(all.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
+        const subjList = [...new Set(all.map(q => canonSubject(q.subject)))].sort();
+        if (state.exam !== 'ALL' && !realExams.includes(state.exam)) state.exam = 'ALL';
+        const qs = currentQs();
+        const yrs = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
+        const sel = (id, label, opts, cur) => `<label class="flex items-center gap-1">${label} <select id="${id}" class="bg-black/30 border border-gray-600 rounded-lg px-2 py-1">${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>`;
+        let h = `<div class="flex gap-2 text-xs"><button type="button" data-view="pyq" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'pyq' ? 'bg-amber-600 text-white border-amber-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-chart-column"></i> PYQ Analysis</button><button type="button" data-view="perf" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'perf' ? 'bg-teal-600 text-white border-teal-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-user-check"></i> My Test Performance &amp; Priority</button></div>`;
+        h += `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300">` +
+            sel('ins-exam', 'Exam:', [['ALL', 'All exams'], ...realExams.map(e => [e, `${e} (${examCount[e]})`])], state.exam) +
+            sel('ins-from', 'From year:', [['', 'Earliest'], ...allYears.map(y => [y, y])], state.from) +
+            sel('ins-to', 'To year:', [['', 'Latest'], ...allYears.slice().reverse().map(y => [y, y])], state.to) +
+            (state.view === 'pyq' ? sel('ins-subj', 'Subject:', [['ALL', 'All subjects'], ...subjList.map(s => [s, s])], state.subject) : '') +
+            `<span><b class="text-amber-300">${qs.length}</b> questions &middot; <b class="text-amber-300">${yrs.length}</b> years${yrs.length ? ` (${yrs[0]}–${yrs[yrs.length - 1]})` : ''}</span><button type="button" id="ins-reset" class="text-gray-400 hover:underline">Reset</button></div>`;
+        if (junk.length) h += `<div class="text-xs rounded-lg border border-amber-500/40 bg-amber-900/10 p-3 text-amber-200">${junk.length} question${junk.length > 1 ? 's' : ''} have a <b>subject name in the Exam field</b> (e.g. "${esc(junk[0].exam)}"), so they are left out of the Exam list. They still count under "All exams". <button type="button" id="ins-fix-junk" class="underline font-bold">Review &amp; fix</button></div>`;
+        h += state.view === 'pyq' ? pyqView(qs) : perfView(qs);
+        h += `<div class="text-[11px] text-gray-500">Subject names are merged for analysis only (Economy &rarr; Economics, Governance &rarr; Polity, Agriculture &rarr; Economics, Medieval/Ancient History &rarr; Ancient &amp; Medieval, etc.). Your saved data is not changed.</div>`;
         root.innerHTML = h;
-        const sel = root.querySelector('#ins-exam'); if (sel) sel.onchange = () => { state.exam = sel.value; renderInsights(); };
+        const on = (id, fn) => { const e = root.querySelector('#' + id); if (e) e.onchange = () => { fn(e.value); renderInsights(); }; };
+        on('ins-exam', v => state.exam = v); on('ins-from', v => state.from = v); on('ins-to', v => state.to = v); on('ins-subj', v => state.subject = v);
+        const rs = root.querySelector('#ins-reset'); if (rs) rs.onclick = () => { state.exam = 'ALL'; state.from = ''; state.to = ''; state.subject = 'ALL'; renderInsights(); };
         const sr = root.querySelector('#ins-show-repeat'); if (sr) sr.onclick = () => { window._markFilter = 'repeat'; resetKeepMark(); };
-        root.onclick = e => { const b = e.target.closest('[data-go-theme]'); if (b) goToTheme(b.dataset.goSubject, b.dataset.goTheme); };
+        const fj = root.querySelector('#ins-fix-junk'); if (fj) fj.onclick = () => fixJunkExams(junk);
+        root.onclick = e => {
+            const b = e.target.closest('[data-go-theme]'); if (b) { goToTheme(b.dataset.goSubject, b.dataset.goTheme); return; }
+            const v = e.target.closest('[data-view]'); if (v) { state.view = v.dataset.view; renderInsights(); return; }
+            const sh = e.target.closest('[data-share]'); if (sh) { state.share = sh.dataset.share === '1'; renderInsights(); }
+        };
     };
+    function fixJunkExams(junk) {
+        const byLabel = {}, byYear = {}; junk.forEach(q => { byLabel[q.exam] = (byLabel[q.exam] || 0) + 1; byYear[q.year] = (byYear[q.year] || 0) + 1; });
+        showPopup({ title: 'Questions with a wrong Exam label', type: 'warn', html: `<div>${junk.length} questions have a subject name where the exam name should be:</div><div class="text-xs text-gray-300">${Object.entries(byLabel).map(([k, v]) => `${esc(k)}: ${v}`).join(' &middot; ')}</div><div class="text-xs text-gray-300">Years: ${Object.entries(byYear).sort().map(([k, v]) => `${esc(k)} (${v})`).join(', ')}</div>
+            <div>If these are all UPSC CSE papers, you can set their Exam to <b>UPSC CSE</b>. Question numbers and ids stay the same. Not sure? Cancel and check them first.</div>
+            <div class="flex flex-wrap gap-2"><button type="button" id="fj-backup" class="px-3 py-1.5 bg-sky-600 text-white rounded-lg text-xs font-bold">Download backup first</button><button type="button" id="fj-yes" class="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-bold">Set Exam = UPSC CSE</button><button type="button" id="fj-no" class="px-3 py-1.5 bg-gray-700 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
+            onOpen: (b, close) => {
+                b.querySelector('#fj-no').onclick = close;
+                b.querySelector('#fj-backup').onclick = () => { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(pyqDatabase, null, 2)], { type: 'application/json' })); a.download = `UPSC_PYQ_Database_Backup_${new Date().toISOString().slice(0, 10)}.json`; a.click(); };
+                b.querySelector('#fj-yes').onclick = () => { const ids = new Set(junk.map(q => q.id)); pyqDatabase.forEach(q => { if (ids.has(q.id)) q.exam = 'UPSC CSE'; }); saveDatabase(); applyFilters(); close(); renderInsights(); };
+            } });
+    }
     function resetKeepMark() {
         ['filter-exam', 'filter-year', 'filter-subject', 'filter-pcs'].forEach(id => { const e = document.getElementById(id); if (e) e.value = 'ALL'; });
         document.getElementById('filter-search').value = '';
