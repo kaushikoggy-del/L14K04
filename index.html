@@ -4516,7 +4516,7 @@ If reliable sources clearly disagree with the official key, add a last line star
             if (!q) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
             lastMsg = `Writing explanation... (${q.exam} ${q.year})`; updateBar();
             try {
-                const out = await generateFor(q);
+                const out = await limited(q);
                 await putExpl({ id: q.id, text: out.text, sources: out.sources, grounded: out.grounded, model: out.model, ts: Date.now() });
                 renderPanel(q.id); backoff = 0; consecutiveErrors = 0;
                 lastMsg = 'Working in the background'; updateBar();
@@ -4530,7 +4530,17 @@ If reliable sources clearly disagree with the official key, add a last line star
             }
         } finally { running = false; kick(delay); }
     }
-    window.aiGenerate = generateFor;
+    // One shared queue for explanation + elimination writers: never two requests at once, and a shared cool-down when Google says "busy"
+    let nextOk = 0, chain = Promise.resolve();
+    function limited(q, opts) {
+        const run = async () => {
+            const wait = nextOk - Date.now(); if (wait > 0) await new Promise(r => setTimeout(r, wait));
+            try { const out = await generateFor(q, opts); nextOk = Date.now() + 6000; return out; }
+            catch (e) { nextOk = Date.now() + ((e.kind === 'quota' || e.kind === 'busy') ? 65000 : 6000); throw e; }
+        };
+        const pr = chain.then(run, run); chain = pr.catch(() => {}); return pr;
+    }
+    window.aiGenerate = limited;
     window.aiHasKeys = () => getKeys().length > 0 || getAltKeys().length > 0;
     document.addEventListener('DOMContentLoaded', async () => {
         const inp = document.getElementById('expl-import-input'); if (inp) inp.addEventListener('change', explImport);
@@ -5022,7 +5032,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
                 refreshBox(q.id); backoff = 0; errs = 0; lastMsg = 'Working in the background';
             } catch (e) {
                 errs++;
-                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min`; }
+                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 90)})`; }
                 else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check Settings'; }
                 else { fails[q.id] = (fails[q.id] || 0) + 1; if (fails[q.id] >= 3) skip.add(q.id); lastMsg = 'Last try failed: ' + String(e.message).slice(0, 80); if (errs >= 8) { delay = 10 * 60000; errs = 0; } }
                 console.warn('[elimination]', e.message);
