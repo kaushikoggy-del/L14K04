@@ -1,6 +1,7 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>(function(){try{if(!localStorage.getItem('app_pw_v1')||sessionStorage.getItem('app_unlocked')!=='1'){var st=document.createElement('style');st.id='lock-hide';st.textContent='body>*:not(#lock-screen){visibility:hidden!important}';document.documentElement.appendChild(st);}}catch(e){}})();</script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
     <meta charset="UTF-8">
@@ -300,6 +301,12 @@
                         <input type="file" id="json-file-input" accept=".json" class="hidden" onchange="importDatabaseJSON(event)">
                         <button onclick="openDisplaySettingsModal()" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-purple-500/10 hover:text-purple-400 flex items-center gap-2.5 transition">
                             <i class="fa-solid fa-eye text-purple-400 w-4"></i> Display & Comfort Panel
+                        </button>
+                        <button onclick="changePassword()" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-rose-500/10 hover:text-rose-400 flex items-center gap-2.5 transition">
+                            <i class="fa-solid fa-lock text-rose-400 w-4"></i> Change Password
+                        </button>
+                        <button onclick="lockNow()" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-rose-500/10 hover:text-rose-400 flex items-center gap-2.5 transition">
+                            <i class="fa-solid fa-user-lock text-rose-400 w-4"></i> Lock Site Now
                         </button>
                     </div>
                 </div>
@@ -5035,6 +5042,99 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         if (inp) inp.addEventListener('change', ev => { const f = ev.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = async () => { try { let n = 0; for (const x of JSON.parse(r.result)) if (x && x.id && x.text) { await put(x); n++; } bar(); showPopup({ title: 'Imported', type: 'ok', html: `<div>Imported ${n} items.</div>` }); } catch (e) { showErrorPopup('Could not import', e.message); } }; r.readAsText(f); ev.target.value = ''; });
         await loadAll(); bar(); setInterval(bar, 15000); kick(30000);
     });
+})();
+</script>
+
+<script>
+// ===== PASSWORD LOCK (stored only in this browser as a salted hash) =====
+(function () {
+    const KEY = 'app_pw_v1', SESS = 'app_unlocked';
+    const ls = { get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
+    const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} }, del: k => { try { sessionStorage.removeItem(k); } catch (e) {} } };
+    const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+    const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
+    async function derive(pw, saltB64) {
+        const salt = unb64(saltB64);
+        if (window.crypto && crypto.subtle) {
+            const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
+            return b64(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, k, 256));
+        }
+        let h = 2166136261; const s = pw + saltB64; for (let r = 0; r < 20000; r++) for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return 'f' + h;
+    }
+    const getRec = () => { try { return JSON.parse(ls.get(KEY) || 'null'); } catch (e) { return null; } };
+    async function makeRec(pw) { const salt = b64(crypto.getRandomValues ? crypto.getRandomValues(new Uint8Array(16)) : new Uint8Array(16)); return { salt, hash: await derive(pw, salt) }; }
+    async function check(pw) { const r = getRec(); if (!r) return false; return (await derive(pw, r.salt)) === r.hash; }
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    function unlockUI() { const o = document.getElementById('lock-screen'); if (o) o.remove(); const st = document.getElementById('lock-hide'); if (st) st.remove(); }
+    function buildScreen(mode) {
+        unlockUI();
+        if (!document.getElementById('lock-hide')) { const st = document.createElement('style'); st.id = 'lock-hide'; st.textContent = 'body>*:not(#lock-screen){visibility:hidden!important}'; document.documentElement.appendChild(st); }
+        const o = document.createElement('div'); o.id = 'lock-screen';
+        o.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:#0b0d12;display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,Segoe UI,Arial,sans-serif;color:#e5e7eb;';
+        const inp = 'width:100%;box-sizing:border-box;padding:10px 12px;margin-top:10px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#fff;font-size:15px;';
+        const btn = 'width:100%;margin-top:14px;padding:10px;border-radius:10px;border:0;background:#d97706;color:#fff;font-weight:700;font-size:15px;cursor:pointer;';
+        const create = mode === 'create';
+        o.innerHTML = `<div style="width:100%;max-width:380px;background:#161a22;border:1px solid #374151;border-radius:16px;padding:26px;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+            <div style="font-size:34px;text-align:center">&#128274;</div>
+            <div style="font-size:20px;font-weight:800;text-align:center;margin-top:4px">UPSC PYQ Analytics</div>
+            <div style="text-align:center;color:#9ca3af;font-size:13px;margin-top:4px">${create ? 'Create a password for this site' : 'Enter your password to continue'}</div>
+            <form id="lock-form" autocomplete="off">
+              <input id="lock-pw" type="password" placeholder="${create ? 'New password (min 4 characters)' : 'Password'}" style="${inp}" autofocus>
+              ${create ? `<input id="lock-pw2" type="password" placeholder="Type it again" style="${inp}">` : ''}
+              <div id="lock-err" style="color:#fb7185;font-size:13px;min-height:18px;margin-top:8px"></div>
+              <button type="submit" style="${btn}">${create ? 'Save password &amp; open' : 'Unlock'}</button>
+            </form>
+            ${create ? `<div style="color:#9ca3af;font-size:12px;margin-top:12px;line-height:1.5">The password is saved only in this browser (as a scrambled hash, never as text). There is no email reset, so remember it.</div>`
+            : `<div style="text-align:center;margin-top:14px"><a href="#" id="lock-forgot" style="color:#9ca3af;font-size:12px">Forgot password?</a></div><div id="lock-forgot-box" style="display:none;margin-top:10px;font-size:12px;color:#d1d5db;line-height:1.5;background:#0f131a;border:1px solid #374151;border-radius:10px;padding:10px">There is no email reset because everything is stored in this browser. To reset, you must erase the site's saved data (this <b>deletes your questions, notes, test results and explanations</b> unless you have a backup file). Type <b>RESET</b> below to erase everything and start fresh.<input id="lock-reset-in" style="${inp}" placeholder="Type RESET"><button type="button" id="lock-reset-btn" style="${btn};background:#be123c">Erase everything</button></div>`}
+          </div>`;
+        document.documentElement.appendChild(o);
+        const pw = o.querySelector('#lock-pw'); setTimeout(() => pw && pw.focus(), 50);
+        let fails = 0, busy = false;
+        o.querySelector('#lock-form').onsubmit = async ev => {
+            ev.preventDefault(); if (busy) return; busy = true;
+            const err = o.querySelector('#lock-err'); err.textContent = '';
+            try {
+                const v = pw.value;
+                if (create) {
+                    const v2 = o.querySelector('#lock-pw2').value;
+                    if (v.length < 4) err.textContent = 'Please use at least 4 characters.';
+                    else if (v !== v2) err.textContent = 'The two passwords do not match.';
+                    else { ls.set(KEY, JSON.stringify(await makeRec(v))); ss.set(SESS, '1'); unlockUI(); }
+                } else {
+                    if (await check(v)) { ss.set(SESS, '1'); unlockUI(); }
+                    else { fails++; err.textContent = 'Wrong password.' + (fails >= 3 ? ' Please wait...' : ''); pw.value = ''; if (fails >= 3) await new Promise(r => setTimeout(r, Math.min(15000, 1500 * fails))); err.textContent = fails >= 3 ? 'Wrong password. Try again.' : err.textContent; }
+                }
+            } catch (e) { err.textContent = 'Something went wrong: ' + e.message; }
+            busy = false;
+        };
+        const fg = o.querySelector('#lock-forgot'); if (fg) fg.onclick = e => { e.preventDefault(); const b = o.querySelector('#lock-forgot-box'); b.style.display = b.style.display === 'none' ? 'block' : 'none'; };
+        const rb = o.querySelector('#lock-reset-btn');
+        if (rb) rb.onclick = async () => {
+            if (o.querySelector('#lock-reset-in').value.trim() !== 'RESET') { o.querySelector('#lock-err').textContent = 'Type RESET (capital letters) to confirm.'; return; }
+            try { localStorage.clear(); sessionStorage.clear(); if (indexedDB.databases) { for (const d of await indexedDB.databases()) indexedDB.deleteDatabase(d.name); } } catch (e) {}
+            location.reload();
+        };
+    }
+    // Gate
+    if (!getRec()) buildScreen('create');
+    else if (ss.get(SESS) !== '1') buildScreen('enter');
+
+    // Menu actions
+    window.lockNow = function () { ss.del(SESS); location.reload(); };
+    window.changePassword = function () {
+        showPopup({ title: 'Change password', type: 'info', html: `<input id="cp-old" type="password" placeholder="Current password" style="width:100%;padding:8px;border-radius:8px;border:1px solid #4b5563;background:#000;color:#fff">
+            <input id="cp-new" type="password" placeholder="New password (min 4 characters)" style="width:100%;padding:8px;border-radius:8px;border:1px solid #4b5563;background:#000;color:#fff">
+            <input id="cp-new2" type="password" placeholder="New password again" style="width:100%;padding:8px;border-radius:8px;border:1px solid #4b5563;background:#000;color:#fff">
+            <div id="cp-err" style="color:#fb7185;font-size:12px"></div><button type="button" id="cp-save" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold">Change password</button>`,
+            onOpen: (b, close) => { b.querySelector('#cp-save').onclick = async () => {
+                const e = b.querySelector('#cp-err'), n = b.querySelector('#cp-new').value;
+                if (!(await check(b.querySelector('#cp-old').value))) { e.textContent = 'Current password is wrong.'; return; }
+                if (n.length < 4) { e.textContent = 'Use at least 4 characters.'; return; }
+                if (n !== b.querySelector('#cp-new2').value) { e.textContent = 'New passwords do not match.'; return; }
+                ls.set(KEY, JSON.stringify(await makeRec(n))); close(); showPopup({ title: 'Done', type: 'ok', html: '<div>Your password has been changed.</div>' });
+            }; } });
+    };
 })();
 </script>
 
