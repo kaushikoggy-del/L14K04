@@ -434,6 +434,8 @@
             </div>
 
             <div id="mark-chips" class="flex flex-wrap items-center gap-2 px-1 font-sans text-xs"></div>
+            <div id="elim-status-bar" class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border border-emerald-500/30 bg-emerald-900/10 font-sans text-xs text-gray-300"></div>
+            <input type="file" id="elim-import-input" accept=".json" class="hidden">
             <div id="expl-status-bar" class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border border-sky-500/30 bg-sky-900/10 font-sans text-xs text-gray-300"></div>
             <input type="file" id="expl-import-input" accept=".json" class="hidden">
 
@@ -1811,7 +1813,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         <div id="analysis-${q.id}" class="${expandClass} mt-3 space-y-3 font-sans text-xs bg-black/30 p-4 rounded-xl border border-gray-700/50">
                             <div>
                                 <span class="font-bold text-emerald-400 block mb-1">Option Elimination Logic:</span>
-                                <p class="text-gray-300 leading-relaxed font-pyq-text text-xs">${q.eliminationLogic}</p>
+                                ${elimBoxHtml(q)}
                             </div>
                             <div class="pt-2 border-t border-gray-700/40">
                                 <span class="font-bold text-amber-400 block mb-1">UPSC Peripheral Knowledge & Core Facts:</span>
@@ -4418,8 +4420,8 @@ Remember: one useful related fact for UPSC.
 If reliable sources clearly disagree with the official key, add a last line starting "Note:".`;
     }
     class ExplErr extends Error { constructor(msg, kind) { super(msg); this.kind = kind; } }
-    async function callOnce(key, model, q, useSearch) {
-        const body = { contents: [{ role: 'user', parts: [{ text: buildPrompt(q) }] }], generationConfig: { temperature: 0.3, maxOutputTokens: 4096 } };
+    async function callOnce(key, model, q, useSearch, opts) {
+        const body = { contents: [{ role: 'user', parts: [{ text: (opts && opts.prompt) || buildPrompt(q) }] }], generationConfig: { temperature: 0.3, maxOutputTokens: (opts && opts.maxTokens) || 4096 } };
         if (useSearch) body.tools = [{ google_search: {} }];
         let r;
         try { r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 70000); }
@@ -4437,16 +4439,16 @@ If reliable sources clearly disagree with the official key, add a last line star
         ((c.groundingMetadata && c.groundingMetadata.groundingChunks) || []).forEach(g => { if (g.web && g.web.uri && !seen.has(g.web.uri)) { seen.add(g.web.uri); sources.push({ uri: g.web.uri, title: g.web.title || '' }); } });
         return { text, sources: sources.slice(0, 6), grounded: useSearch };
     }
-    async function generateFor(q) {
+    async function generateFor(q, opts) {
         const keys = getKeys();
         if (!keys.length && !getAltKeys().length) throw new ExplErr('No API key saved', 'nokey');
         let last = null;
         for (let k = 0; k < keys.length; k++) {
             const key = keys[(keyIdx + k) % keys.length];
             const models = await getModels(key);
-            for (const useSearch of [true, false]) {
+            for (const useSearch of ((opts && opts.noSearch) ? [false] : [true, false])) {
                 for (const model of models) {
-                    try { const out = await callOnce(key, model, q, useSearch); keyIdx = (keyIdx + k) % keys.length; out.model = model; return out; }
+                    try { const out = await callOnce(key, model, q, useSearch, opts); keyIdx = (keyIdx + k) % keys.length; out.model = model; return out; }
                     catch (e) { last = e; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
                 }
                 if (last && last.kind === 'key') break;
@@ -4456,7 +4458,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         // All Gemini keys are exhausted / busy: try Groq and OpenRouter keys (no web search, so no sources)
         const alt = getAltKeys();
         for (const a of alt) {
-            try { return await callOpenAIStyle(a, q); } catch (e) { if (!last || last.kind !== 'key') last = e; }
+            try { return await callOpenAIStyle(a, q, opts); } catch (e) { if (!last || last.kind !== 'key') last = e; }
         }
         throw last || new ExplErr('Unknown error', 'other');
     }
@@ -4466,7 +4468,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         return [...ks.filter(k => k.startsWith('gsk_')).map(k => ({ type: 'groq', key: k })), ...ks.filter(k => k.startsWith('sk-or-')).map(k => ({ type: 'or', key: k }))];
     }
     let groqModel = null;
-    async function callOpenAIStyle(a, q) {
+    async function callOpenAIStyle(a, q, opts) {
         const isGroq = a.type === 'groq';
         const base = isGroq ? 'https://api.groq.com/openai/v1' : 'https://openrouter.ai/api/v1';
         const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + a.key };
@@ -4486,7 +4488,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         let last = null;
         for (const model of models) {
             try {
-                const r = await fetchT(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model, temperature: 0.3, max_tokens: 900, messages: [{ role: 'user', content: buildPrompt(q).replace('Use Google Search to check what good coaching institutes and reliable sources say about this question, then write', 'Write') }] }) }, 45000);
+                const r = await fetchT(base + '/chat/completions', { method: 'POST', headers, body: JSON.stringify({ model, temperature: 0.3, max_tokens: (opts && opts.maxTokens) || 900, messages: [{ role: 'user', content: (opts && opts.prompt) || buildPrompt(q).replace('Use Google Search to check what good coaching institutes and reliable sources say about this question, then write', 'Write') }] }) }, 45000);
                 const d = await r.json();
                 if (!r.ok || d.error) { last = new ExplErr((isGroq ? 'Groq' : 'OpenRouter') + ': ' + ((d.error && d.error.message) || 'HTTP ' + r.status), r.status === 429 ? 'quota' : 'other'); continue; }
                 const text = ((d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content) || '').trim();
@@ -4526,6 +4528,8 @@ If reliable sources clearly disagree with the official key, add a last line star
             }
         } finally { running = false; kick(delay); }
     }
+    window.aiGenerate = generateFor;
+    window.aiHasKeys = () => getKeys().length > 0 || getAltKeys().length > 0;
     document.addEventListener('DOMContentLoaded', async () => {
         const inp = document.getElementById('expl-import-input'); if (inp) inp.addEventListener('change', explImport);
         await loadAll(); updateBar(); setInterval(updateBar, 15000); kick(20000);
@@ -4717,6 +4721,166 @@ If reliable sources clearly disagree with the official key, add a last line star
         return h;
     }
     document.addEventListener('DOMContentLoaded', () => { renderChips(); });
+})();
+</script>
+
+<script>
+// ===== OPTION ELIMINATION LOGIC WRITER (2014-2026 PYQs) =====
+(function () {
+    const FROM_YEAR = 2014, TO_YEAR = 2026, DELAY_MS = 7000, MAX_BACKOFF = 15 * 60 * 1000;
+    window.elimMap = {};
+    let idb = null, timer = null, running = false, backoff = 0, errs = 0, lastMsg = 'Starting soon...';
+    const skip = new Set(), fails = {};
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const isPaused = () => { try { return localStorage.getItem('elim_paused') === '1'; } catch (e) { return false; } };
+    const inRange = q => { const y = Number(q.year); return y >= FROM_YEAR && y <= TO_YEAR; };
+    const ready = q => /^[A-D]$/i.test(String(q.officialKey || '')) && Array.isArray(q.options) && q.options.length === 4;
+
+    function openDb() { return new Promise((res, rej) => { const r = indexedDB.open('pyq_elim_v1', 1); r.onupgradeneeded = () => r.result.createObjectStore('e', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+    async function loadAll() { try { idb = await openDb(); await new Promise(res => { const rq = idb.transaction('e').objectStore('e').getAll(); rq.onsuccess = () => { rq.result.forEach(x => elimMap[x.id] = x); res(); }; rq.onerror = () => res(); }); } catch (e) { idb = null; } }
+    function put(rec) { elimMap[rec.id] = rec; if (!idb) return Promise.resolve(); return new Promise(res => { try { const tx = idb.transaction('e', 'readwrite'); tx.objectStore('e').put(rec); tx.oncomplete = res; tx.onerror = res; } catch (e) { res(); } }); }
+
+    // ---------- Card box ----------
+    function fmt(text) {
+        return esc(text).split('\n').map(l => {
+            if (/^\s*✗/.test(l)) return `<div style="color:#fda4af">${l}</div>`;
+            if (/^\s*✓/.test(l)) return `<div style="color:#6ee7b7">${l}</div>`;
+            if (/^\s*(Shortcut|Confidence|Trap)/i.test(l)) return `<div style="color:#fcd34d">${l}</div>`;
+            return `<div>${l}</div>`;
+        }).join('');
+    }
+    window.elimBoxHtml = function (q) {
+        const e = elimMap[q.id];
+        let inner;
+        if (e) inner = fmt(e.text) + `<div class="pt-1"><button type="button" onclick="elimRegen('${q.id}')" class="text-gray-500 hover:text-gray-300 underline">Regenerate</button> <button type="button" onclick="elimEdit('${q.id}')" class="text-gray-500 hover:text-gray-300 underline ml-2">Edit</button></div>`;
+        else if (q.eliminationLogic && !/^Pending deep AI enrichment/i.test(q.eliminationLogic)) inner = esc(q.eliminationLogic);
+        else if (inRange(q) && ready(q)) inner = '<span class="text-amber-300">Being prepared in the background - check again later.</span>';
+        else inner = esc(q.eliminationLogic || '');
+        return `<div id="elim-${q.id}" class="text-gray-300 leading-relaxed font-pyq-text text-xs space-y-0.5">${inner}</div>`;
+    };
+    function refreshBox(id) { const el = document.getElementById('elim-' + id); const q = pyqDatabase.find(x => x.id === id); if (el && q) el.outerHTML = elimBoxHtml(q); }
+    window.elimRegen = function (id) { delete fails[id]; skip.delete(id); window._elimPriority = id; showPopup({ title: 'Queued', type: 'info', html: '<div>A new elimination analysis will be written next. Check back in a minute.</div>' }); kick(500); };
+    window.elimEdit = function (id) {
+        const e = elimMap[id] || { id, text: '' };
+        showPopup({ title: 'Edit elimination logic', type: 'info', html: `<textarea id="elim-ta" rows="12" style="width:100%;background:#000;color:#e5e7eb;border:1px solid #4b5563;border-radius:8px;padding:8px;font-size:13px;">${esc(e.text)}</textarea><button type="button" id="elim-save" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold">Save</button>`,
+            onOpen: (b, close) => { b.querySelector('#elim-save').onclick = async () => { const t = b.querySelector('#elim-ta').value.trim(); if (!t) return; await put({ ...e, id, text: t, edited: true, ts: Date.now() }); refreshBox(id); bar(); close(); }; } });
+    };
+
+    // ---------- Script-detected hints (may be false; AI verifies) ----------
+    const RX = [
+        ['extreme word', /\b(only|always|never|exclusively|solely|entirely|completely|purely|absolutely|every|invariably)\b/i],
+        ['extreme trend word', /\b(drastically|enormously|steadily|consistently|continuously)\b/i],
+        ['negation', /\b(does not|do not|cannot|can not|is not|are not|not)\b/i],
+        ['endemic/native', /\b(endemic|native)\b/i],
+        ['binding/mandatory', /\b(binding|mandatory|compulsory|obligatory)\b/i],
+        ['soft verb (influence/encourage/inspired)', /\b(influence|encourage|inspired|promote|facilitate)\b/i],
+        ['hedge word (about/largely/upto/can/may)', /\b(about|largely|nearly|approximately|up to|upto|mostly|generally|can|may|could|at least)\b/i],
+        ['exact figure', /\b\d[\d,.]*\s*(%|per cent|percent|km|million|billion|crore|lakh|years?|metres?)\b/i],
+        ['motto/theme', /\b(motto|theme|slogan)\b/i],
+        ['office swap candidate', /\b(president|prime minister|governor|chief minister|speaker|ministry|minister)\b/i],
+        ['UPSC favourite name', /\b(akbar|ashoka|asoka|vijayanagar|vijayanagara|port)\b/i]
+    ];
+    function hints(q) {
+        const L = ['A', 'B', 'C', 'D'], out = [];
+        const parts = String(q.question).split(/(?:(?<=\s)|^)(\d)\s*[.)]\s+(?=[A-Z])/); const st = [];
+        for (let i = 1; i < parts.length - 1; i += 2) st.push([parts[i], parts[i + 1]]);
+        const items = st.length >= 2 ? st.map(([n, t]) => ['Statement ' + n, t]) : q.options.map((o, i) => ['Option ' + L[i], o]);
+        items.forEach(([name, t]) => { const f = RX.filter(([, rx]) => rx.test(t)).map(([n]) => n); if (String(t).split(/\s+/).length >= 30) f.push('very long, many facts in one sentence'); if (f.length) out.push(`${name}: ${f.join('; ')}`); });
+        return out.join('\n') || 'none detected';
+    }
+
+    const RULEBOOK = `PATTERN RULEBOOK (the student's own research; use as heuristics, never as proof):
+1. Extreme/absolute wording (only, always, never, all, entirely) is usually wrong; balanced, general, good-tone statements are usually right.
+2. Too many manufactured facts in one sentence (e.g. missile range+speed+year+maker): examiner changes one fact, so the whole statement is wrong.
+3. Geography two-statement concept questions: concept and description swapped; directions interchanged (east-to-west vs west-to-east winds).
+4. Ministries/organisations/institutions are frequently swapped - doubt them.
+5. Exact data (precise %, numbers) is often wrong; ranges or soft words (about, largely, upto, more than half) are often right.
+6. Contradictory-sounding statements cannot both be true; use that to cut options.
+7. Pair/statement-count tendency: with 2 statements usually exactly 1 is true; with 3 usually 2 are true; with 4 usually 2-3; with 5 usually 3.
+8. "Endemic to" / "native to" claims are often wrong.
+9. Definition / best-description questions: choose the more nuanced, broader, better-worded description.
+10. Counter-question trick: compare a statement with its opposite ("contains no plastic" vs "contains plastic"); the weaker/"exists" claim is more likely true.
+11. History/personality: if the answer is an unpopular name, the other options are famous names; favourites like Akbar, Ashoka, Vijayanagara, ports are safe 50:50 picks.
+12. Drastically / enormously / steadily / consistently increasing or decreasing - wrong.
+13. Polity: PM/President/Governor/CM interchanged; the Constitution does not define everything (Parliament fills gaps).
+14. Polity: negative statements (does not, cannot) often inorganic = wrong; "all/none/no" often bare-Act statements = right. But static knowledge overrides this; tricks fail in polity and mapping.
+15. Futuristic technology: "can" statements are usually right; "No X exists in space" type is wrong.
+16. IR: "binding / mandatory" usually wrong; "influence / encourage / inspired" usually right; treaty bindingness and organisation swaps are common traps.
+17. Motto / theme of events: usually wrong.
+18. Word association: probable keywords ("some mushrooms are poisonous", "nanoparticles can exist in space") are right; extreme versions are wrong.`;
+    const DATA = `DATA NOTES from 1,100 real PYQs (2014-2025) analysed by the site: statements with extreme words were true only 44% of the time (base 61%); statements with hedge words (about/can/may/largely) were true 69%; exact-figure statements true 33% (small sample); negation 48%. In Environment, extreme statements were true only 15%; in Polity extreme words were NOT reliable (57%). Statement-count: 3 statements -> 2 true in 49% of questions; 4 statements -> 2 or 3 true in 84%; 5 statements -> 3 true in 73%.`;
+    function buildPrompt(q) {
+        const L = ['A', 'B', 'C', 'D'], ki = L.indexOf(String(q.officialKey).toUpperCase());
+        return `You are a UPSC Prelims mentor teaching smart OPTION ELIMINATION. The OFFICIAL KEY below is ground truth. Show how an aspirant could reach it by eliminating options, using real subject logic first and the pattern rulebook second.
+
+${RULEBOOK}
+
+${DATA}
+
+Question (${q.exam} ${q.year}, ${q.subject || ''} / ${q.theme || ''}):
+${q.question}
+${q.options.map((o, i) => `(${L[i]}) ${o}`).join('\n')}
+OFFICIAL KEY: (${L[ki]}) ${q.options[ki]}
+
+Hints from a simple script (may be wrong - verify yourself):
+${hints(q)}
+
+Rules for your answer:
+- Every eliminated option/statement needs a rational reason that fits UPSC: say the factual or logical flaw AND name the pattern in brackets when one applies, e.g. [Pattern: extreme word 'only'] or [Pattern: ministry swap]. Never say "because the key says so".
+- Do not force a pattern that does not apply. If a fact decides it, say "fact-based". In Polity and mapping questions trust static knowledge over word tricks.
+- For statement-type questions: judge each statement (true/false) with its reason, then show how the options narrow down.
+- Plain text only, no markdown symbols, no preamble, max 190 words, exactly this layout:
+✗ (A) reason [Pattern: ...]
+✗ (B) reason
+✓ (C) why it survives
+(one line per option; for statement questions use "✗ Statement 2 - reason" / "✓ Statement 1 - reason" lines and then one line "Options left: ...")
+Shortcut: the quickest elimination path in the exam hall, one line.
+Confidence: High / Medium / Low - how far pattern-based elimination alone works here versus needing the fact.`;
+    }
+
+    // ---------- Scheduler ----------
+    function next() {
+        if (window._elimPriority) { const id = window._elimPriority; window._elimPriority = null; const q = pyqDatabase.find(x => x.id === id); if (q) return q; }
+        const ok = q => inRange(q) && ready(q) && !elimMap[q.id] && !skip.has(q.id);
+        let shown = []; try { shown = _renderQs || []; } catch (e) {}
+        return shown.find(ok) || pyqDatabase.find(ok);
+    }
+    function kick(ms) { clearTimeout(timer); timer = setTimeout(tick, ms); }
+    function bar() {
+        const el = document.getElementById('elim-status-bar'); if (!el) return;
+        const all = pyqDatabase.filter(q => inRange(q) && ready(q)), done = all.filter(q => elimMap[q.id]).length;
+        const paused = isPaused();
+        el.innerHTML = `<span><i class="fa-solid fa-scissors text-emerald-300"></i> Elimination logic ready (${FROM_YEAR}-${TO_YEAR}): <b class="text-emerald-300">${done}</b> / ${all.length}</span><span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}</span><span class="flex gap-3"><button type="button" onclick="elimTogglePause()" class="text-emerald-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button><button type="button" onclick="elimExport()" class="text-gray-400 hover:underline">Export</button><button type="button" onclick="document.getElementById('elim-import-input').click()" class="text-gray-400 hover:underline">Import</button></span>`;
+    }
+    window.elimTogglePause = function () { try { localStorage.setItem('elim_paused', isPaused() ? '0' : '1'); } catch (e) {} bar(); if (!isPaused()) kick(500); };
+    window.elimExport = function () { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(Object.values(elimMap))], { type: 'application/json' })); a.download = `UPSC_Elimination_${new Date().toISOString().slice(0, 10)}.json`; a.click(); };
+    async function tick() {
+        if (running) return; running = true; let delay = DELAY_MS;
+        try {
+            if (isPaused()) { bar(); delay = 30000; return; }
+            if (typeof aiGenerate !== 'function' || !aiHasKeys()) { lastMsg = 'Add an API key in Settings to start'; bar(); delay = 60000; return; }
+            const q = next();
+            if (!q) { lastMsg = 'All questions done'; bar(); delay = 60000; return; }
+            lastMsg = `Writing... (${q.exam} ${q.year})`; bar();
+            try {
+                const out = await aiGenerate(q, { prompt: buildPrompt(q), noSearch: true, maxTokens: 3000 });
+                await put({ id: q.id, text: out.text.trim(), model: out.model, ts: Date.now() });
+                refreshBox(q.id); backoff = 0; errs = 0; lastMsg = 'Working in the background';
+            } catch (e) {
+                errs++;
+                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min`; }
+                else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check Settings'; }
+                else { fails[q.id] = (fails[q.id] || 0) + 1; if (fails[q.id] >= 3) skip.add(q.id); lastMsg = 'Last try failed: ' + String(e.message).slice(0, 80); if (errs >= 8) { delay = 10 * 60000; errs = 0; } }
+                console.warn('[elimination]', e.message);
+            }
+            bar();
+        } finally { running = false; kick(delay); }
+    }
+    document.addEventListener('DOMContentLoaded', async () => {
+        const inp = document.getElementById('elim-import-input');
+        if (inp) inp.addEventListener('change', ev => { const f = ev.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = async () => { try { let n = 0; for (const x of JSON.parse(r.result)) if (x && x.id && x.text) { await put(x); n++; } bar(); showPopup({ title: 'Imported', type: 'ok', html: `<div>Imported ${n} items.</div>` }); } catch (e) { showErrorPopup('Could not import', e.message); } }; r.readAsText(f); ev.target.value = ''; });
+        await loadAll(); bar(); setInterval(bar, 15000); kick(30000);
+    });
 })();
 </script>
 
