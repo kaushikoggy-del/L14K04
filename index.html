@@ -29,8 +29,8 @@
                     },
                     fontFamily: {
                         serif: ['Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
-                        pyq: ['"Century Schoolbook"', 'Georgia', 'serif'],
-                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                        pyq: ['"Century Schoolbook"', '"New Century Schoolbook"', '"Century Schoolbook L"', 'C059', 'Georgia', 'serif'],
+                        sans: ['Georgia', 'Cambria', '"Times New Roman"', 'Times', 'serif'],
                         mono: ['Courier New', 'Courier', 'monospace']
                     }
                 }
@@ -49,13 +49,14 @@
         
         body {
             filter: brightness(var(--app-brightness)) contrast(var(--app-contrast)) sepia(var(--app-sepia)) grayscale(var(--app-grayscale));
-            font-family: 'Georgia', serif;
+            font-family: Georgia, serif;
+            font-size: 12pt;
             transition: background-color 0.3s ease, color 0.3s ease;
         }
 
         .font-pyq-text {
-            font-family: 'Century Schoolbook', 'Georgia', serif;
-            font-size: 1.05rem;
+            font-family: 'Century Schoolbook', 'New Century Schoolbook', 'Century Schoolbook L', C059, Georgia, serif !important;
+            font-size: 12pt !important;
             line-height: 1.7;
         }
 
@@ -152,7 +153,7 @@
             padding: 2px 10px;
             font-size: 0.75rem;
             border-radius: 10px;
-            font-family: sans-serif;
+            font-family: Georgia, serif;
         }
 
         /* Custom Scrollbars */
@@ -839,7 +840,7 @@
         </div>
     </div>
 </div>
-    <div id="cbt-arena" class="hidden fixed inset-0 z-50 flex flex-col select-none" style="background:#e9dfc8; color:#2b261d; font-family: Georgia, 'Century Schoolbook', serif;">
+    <div id="cbt-arena" class="hidden fixed inset-0 z-50 flex flex-col select-none" style="background:#e9dfc8; color:#2b261d; font-family: Georgia, serif;">
         <!-- Top Teal Header -->
         <div class="flex items-center justify-between px-5 py-2.5 text-white shadow-md" style="background:#1c4f57;">
             <div class="flex items-center gap-4">
@@ -934,7 +935,7 @@
                 </div>
 
                 <!-- Question & Options Scroll Area -->
-                <div id="cbt-q-stage-body" class="flex-1 overflow-y-auto px-10 py-6 space-y-6" style="font-size:16px; line-height:1.65;">
+                <div id="cbt-q-stage-body" class="flex-1 overflow-y-auto px-10 py-6 space-y-6" style="font-size:12pt; line-height:1.65; font-family: 'Century Schoolbook', 'New Century Schoolbook', 'Century Schoolbook L', C059, Georgia, serif;">
                     <div id="cbt-q-text" class="whitespace-pre-line text-stone-900"></div>
                     <div id="cbt-options-list" class="space-y-2.5 max-w-3xl"></div>
                 </div>
