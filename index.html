@@ -4826,12 +4826,12 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
         }).join('') + '</tbody></table></div>' : '';
         return `<div class="text-xs text-gray-400 mb-2">${items.length} ${title.toLowerCase()} analysed. On average <b class="text-amber-300">${Math.round(base * 100)}%</b> are ${note}.</div><table class="w-full text-xs"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Pattern</th><th>Items with it</th><th>% ${note}</th><th>Verdict</th></tr></thead><tbody>${rows}</tbody></table>${matrix}`;
     }
-    function currentQs() {
+    function currentQs(ignoreSubject) {
         const set = subjectNameSet();
         return pyqDatabase.filter(q => {
             if (state.exam !== 'ALL' && q.exam !== state.exam) return false;
             const y = Number(q.year); if (state.from && !(y >= Number(state.from))) return false; if (state.to && !(y <= Number(state.to))) return false;
-            if (state.subject !== 'ALL' && canonSubject(q.subject) !== state.subject) return false;
+            if (!ignoreSubject && state.subject !== 'ALL' && canonSubject(q.subject) !== state.subject) return false;
             return true;
         });
     }
@@ -4849,15 +4849,17 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
             return { ...t, rec, pri, trend, last, gap: maxY - last, in5, n5: recentYears.length };
         });
     }
-    function pyqView(qs) {
+    function pyqView(qs, base) {
+        base = base || qs;
         const years = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
         const bySubj = {}, cell = {}, yearTot = {};
-        qs.forEach(q => { const s = canonSubject(q.subject), y = Number(q.year); bySubj[s] = (bySubj[s] || 0) + 1; cell[s + '|' + y] = (cell[s + '|' + y] || 0) + 1; yearTot[y] = (yearTot[y] || 0) + 1; });
+        qs.forEach(q => { const s = canonSubject(q.subject), y = Number(q.year); bySubj[s] = (bySubj[s] || 0) + 1; cell[s + '|' + y] = (cell[s + '|' + y] || 0) + 1; });
+        base.forEach(q => { const y = Number(q.year); yearTot[y] = (yearTot[y] || 0) + 1; });   // whole paper size, even when one subject is selected
         const subjects = Object.keys(bySubj).sort((a, b) => bySubj[b] - bySubj[a]), maxS = Math.max(1, ...Object.values(bySubj));
         const cols = years.slice(-20);
         let h = '';
         // subject bars
-        h += card('Questions by subject', subjects.map(s => `<div class="flex items-center gap-2 text-xs mb-1.5"><div class="w-36 shrink-0 text-gray-300 truncate">${esc(s)}</div><div class="flex-1 bg-black/30 rounded h-4"><div style="width:${(bySubj[s] / maxS * 100).toFixed(1)}%;background:#f59e0b;height:100%;border-radius:4px"></div></div><div class="w-28 text-right text-gray-300">${bySubj[s]} <span class="text-gray-500">(${pct(bySubj[s], qs.length)}% &middot; ${(bySubj[s] / Math.max(1, years.length)).toFixed(1)}/yr)</span></div></div>`).join(''));
+        h += card('Questions by subject', subjects.map(s => `<div class="flex items-center gap-2 text-xs mb-1.5"><div class="w-36 shrink-0 text-gray-300 truncate">${esc(s)}</div><div class="flex-1 bg-black/30 rounded h-4"><div style="width:${(bySubj[s] / maxS * 100).toFixed(1)}%;background:#f59e0b;height:100%;border-radius:4px"></div></div><div class="w-28 text-right text-gray-300">${bySubj[s]} <span class="text-gray-500">(${pct(bySubj[s], base.length)}% &middot; ${(bySubj[s] / Math.max(1, years.length)).toFixed(1)}/yr)</span></div></div>`).join(''));
         // grid: counts or share
         let max = 1; Object.entries(cell).forEach(([k, v]) => { const y = +k.split('|')[1]; const val = state.share ? v / yearTot[y] : v; if (val > max) max = val; });
         const earlier = years.slice(0, -5), recent = years.slice(-5);
@@ -4878,7 +4880,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
         h += card('Question formats over the years', `<table class="text-xs mb-3"><thead><tr class="text-gray-400 text-left"><th class="pr-3">Format</th><th class="pr-3">Total</th>${fcols.map(y => `<th class="px-1 font-normal">${String(y).slice(-2)}</th>`).join('')}</tr></thead><tbody>` +
             fmts.map(f => `<tr class="border-t border-gray-700/40"><td class="pr-3 py-1 text-gray-200 whitespace-nowrap">${esc(f)}</td><td class="pr-3">${fm[f]} (${pct(fm[f], qs.length)}%)</td>${fcols.map(y => { const v = fmYear[f + '|' + y] || 0, tot = yearTot[y] || 1; return `<td style="text-align:center;min-width:30px;background:rgba(56,189,248,${v ? (0.1 + 0.6 * v / tot).toFixed(2) : 0})" title="${esc(f)} ${y}: ${v}">${v ? Math.round(v / tot * 100) : ''}</td>`; }).join('')}</tr>`).join('') + `</tbody></table>` +
             (cntRows ? `<div class="text-[11px] text-gray-400 mb-1">How many statements are usually TRUE (from questions where the answer could be worked out)</div><table class="text-xs"><tbody>${cntRows}</tbody></table>` : ''),
-            'Cells in the year columns show % of that year\'s paper. Format is detected from the question wording, so a few may be misfiled.');
+            'Cells in the year columns show % of that year\'s questions in this selection. Format is detected from the question wording, so a few may be misfiled.');
         // pattern effectiveness
         const it = collectItems(qs);
         h += card('Do your elimination patterns really work? (tested on your own PYQs)',
@@ -4921,7 +4923,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
             (state.view === 'pyq' ? sel('ins-subj', 'Subject:', [['ALL', 'All subjects'], ...subjList.map(s => [s, s])], state.subject) : '') +
             `<span><b class="text-amber-300">${qs.length}</b> questions &middot; <b class="text-amber-300">${yrs.length}</b> years${yrs.length ? ` (${yrs[0]}–${yrs[yrs.length - 1]})` : ''}</span><button type="button" id="ins-reset" class="text-gray-400 hover:underline">Reset</button></div>`;
         if (junk.length) h += `<div class="text-xs rounded-lg border border-amber-500/40 bg-amber-900/10 p-3 text-amber-200">${junk.length} question${junk.length > 1 ? 's' : ''} have a <b>subject name in the Exam field</b> (e.g. "${esc(junk[0].exam)}"), so they are left out of the Exam list. They still count under "All exams". <button type="button" id="ins-fix-junk" class="underline font-bold">Review &amp; fix</button></div>`;
-        h += state.view === 'pyq' ? pyqView(qs) : perfView(qs);
+        h += state.view === 'pyq' ? pyqView(qs, currentQs(true)) : perfView(qs);
         h += `<div class="text-[11px] text-gray-500">Subject names are merged for analysis only (Economy &rarr; Economics, Governance &rarr; Polity, Agriculture &rarr; Economics, Medieval/Ancient History &rarr; Ancient &amp; Medieval, etc.). Your saved data is not changed.</div>`;
         root.innerHTML = h;
         const on = (id, fn) => { const e = root.querySelector('#' + id); if (e) e.onchange = () => { fn(e.value); renderInsights(); }; };
