@@ -4501,7 +4501,9 @@ If reliable sources clearly disagree with the official key, add a last line star
     // ----- Scheduler -----
     function nextTarget() {
         while (priority.length) { const id = priority.shift(); const q = pyqDatabase.find(x => x.id === id); if (q) return q; }
-        return pyqDatabase.find(q => !explMap[q.id] && !skip.has(q.id));
+        const okq = q => !explMap[q.id] && !skip.has(q.id);
+        const inR = q => { const y = Number(q.year); return y >= 2014 && y <= 2026 && /^[A-D]$/i.test(String(q.officialKey || '')); };
+        return pyqDatabase.find(q => okq(q) && inR(q)) || pyqDatabase.find(okq);
     }
     function kick(ms) { clearTimeout(timer); timer = setTimeout(tick, ms); }
     async function tick() {
@@ -4822,12 +4824,15 @@ ${q.question}
 ${q.options.map((o, i) => `(${L[i]}) ${o}`).join('\n')}
 OFFICIAL KEY: (${L[ki]}) ${q.options[ki]}
 
+VERIFIED FACTS (explanation written earlier from web sources - rely on these facts to judge each option; if a fact conflicts with a word-pattern, the fact wins):
+${(window.explMap && explMap[q.id] && explMap[q.id].text || '').slice(0, 1800)}
+
 Hints from a simple script (may be wrong - verify yourself):
 ${hints(q)}
 
 Rules for your answer:
 - Every eliminated option/statement needs a rational reason that fits UPSC: say the factual or logical flaw AND name the pattern in brackets when one applies, e.g. [Pattern: extreme word 'only'] or [Pattern: ministry swap]. Never say "because the key says so".
-- Do not force a pattern that does not apply. If a fact decides it, say "fact-based". In Polity and mapping questions trust static knowledge over word tricks.
+- Do not force a pattern that does not apply. If a fact decides it, say "fact-based" and state the fact. In Polity and mapping questions trust static knowledge over word tricks.
 - For statement-type questions: judge each statement (true/false) with its reason, then show how the options narrow down.
 - Plain text only, no markdown symbols, no preamble, max 190 words, exactly this layout:
 ✗ (A) reason [Pattern: ...]
@@ -4841,7 +4846,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
     // ---------- Scheduler ----------
     function next() {
         if (window._elimPriority) { const id = window._elimPriority; window._elimPriority = null; const q = pyqDatabase.find(x => x.id === id); if (q) return q; }
-        const ok = q => inRange(q) && ready(q) && !elimMap[q.id] && !skip.has(q.id);
+        const ok = q => inRange(q) && ready(q) && !elimMap[q.id] && !skip.has(q.id) && !!(window.explMap && explMap[q.id]);
         let shown = []; try { shown = _renderQs || []; } catch (e) {}
         return shown.find(ok) || pyqDatabase.find(ok);
     }
@@ -4860,7 +4865,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
             if (isPaused()) { bar(); delay = 30000; return; }
             if (typeof aiGenerate !== 'function' || !aiHasKeys()) { lastMsg = 'Add an API key in Settings to start'; bar(); delay = 60000; return; }
             const q = next();
-            if (!q) { lastMsg = 'All questions done'; bar(); delay = 60000; return; }
+            if (!q) { const waiting = pyqDatabase.some(x => inRange(x) && ready(x) && !elimMap[x.id]); lastMsg = waiting ? 'Waiting for explanations (facts) to be written first' : 'All questions done'; bar(); delay = waiting ? 20000 : 60000; return; }
             lastMsg = `Writing... (${q.exam} ${q.year})`; bar();
             try {
                 const out = await aiGenerate(q, { prompt: buildPrompt(q), noSearch: true, maxTokens: 3000 });
