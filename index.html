@@ -256,6 +256,9 @@
               <button onclick="switchTab('notes')" id="nav-notes" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-400 hover:text-white">
                         <i class="fa-solid fa-book-bookmark"></i> Smart Notes
                     </button>
+                    <button onclick="switchTab('insights')" id="nav-insights" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-400 hover:text-white">
+                        <i class="fa-solid fa-chart-column"></i> Insights
+                    </button>
                     <button onclick="switchTab('cbt')" id="nav-cbt" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-teal-300 hover:text-white">
                         <i class="fa-solid fa-stopwatch"></i> Test Series (CBT)
                     </button>
@@ -430,6 +433,7 @@
                 </div>
             </div>
 
+            <div id="mark-chips" class="flex flex-wrap items-center gap-2 px-1 font-sans text-xs"></div>
             <div id="expl-status-bar" class="flex flex-wrap items-center justify-between gap-2 px-3 py-2 rounded-lg border border-sky-500/30 bg-sky-900/10 font-sans text-xs text-gray-300"></div>
             <input type="file" id="expl-import-input" accept=".json" class="hidden">
 
@@ -691,6 +695,7 @@
             </div>
         </section>
         <!-- ==================== ISOLATED TEST SERIES (CBT) MODULE ==================== -->
+<section id="tab-insights" class="hidden space-y-4 font-sans"><div id="insights-root" class="space-y-4"></div></section>
 <section id="tab-cbt" class="hidden space-y-6">
     <!-- 1. Test Series Lobby & Isolated Importer -->
     <div id="cbt-lobby" class="space-y-6">
@@ -1245,13 +1250,14 @@
 
         // TAB NAVIGATION
         function switchTab(tabId) {
-            ['explorer', 'import', 'notes', 'cbt'].forEach(t => {
+            ['explorer', 'import', 'notes', 'insights', 'cbt'].forEach(t => {
                 document.getElementById(`tab-${t}`).classList.add('hidden');
                 document.getElementById(`nav-${t}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-400 hover:text-white';
             });
             document.getElementById(`tab-${tabId}`).classList.remove('hidden');
             document.getElementById(`nav-${tabId}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition bg-gray-800 text-amber-400 border border-amber-500/30';
             if (tabId === 'cbt' && typeof renderCbtLobby === 'function') renderCbtLobby();
+            if (tabId === 'insights' && typeof renderInsights === 'function') renderInsights();
         }
 
         // 3-DOTS MENU & MODALS
@@ -1610,6 +1616,8 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                     if (!haystack.includes(searchKeyword)) return false;
                 }
 
+                if (window._markFilter && !passesMarkFilter(q)) return false;
+
                 return true;
             });
 
@@ -1617,7 +1625,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
             window._lastFilteredIds = filtered.map(q => q.id);
             const _del = document.getElementById('btn-delete-shown');
             if (_del) {
-                const narrowed = (examFilter !== 'ALL' || yearFilter !== 'ALL' || subFilter !== 'ALL' || themeFilter !== 'ALL' || pcsFilter !== 'ALL' || searchKeyword) && filtered.length > 0 && filtered.length < pyqDatabase.length;
+                const narrowed = (examFilter !== 'ALL' || yearFilter !== 'ALL' || subFilter !== 'ALL' || themeFilter !== 'ALL' || pcsFilter !== 'ALL' || searchKeyword || window._markFilter) && filtered.length > 0 && filtered.length < pyqDatabase.length;
                 _del.classList.toggle('hidden', !narrowed);
                 _del.style.display = narrowed ? 'flex' : '';
                 document.getElementById('btn-delete-shown-label').textContent = `Delete all ${filtered.length} shown`;
@@ -1790,6 +1798,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         }).join('')}
                     </div>
 
+                    ${markBarHtml(q)}
                     ${explButtonHtml(q)}
 
                     <!-- Toggleable Analysis Accordion -->
@@ -4260,7 +4269,10 @@ function renderCbtSidebar() {
 
 function confirmSubmitCbt() {
     clearInterval(cbtTimerInterval);
+    let rec = null;
+    try { rec = recordCbtAttempt(); } catch (e) { console.error(e); }
     document.getElementById('cbt-arena').classList.add('hidden');
+    try { showCbtResultPopup(rec); } catch (e) { console.error(e); }
 }
     </script>
 <script>
@@ -4518,6 +4530,193 @@ If reliable sources clearly disagree with the official key, add a last line star
         const inp = document.getElementById('expl-import-input'); if (inp) inp.addEventListener('change', explImport);
         await loadAll(); updateBar(); setInterval(updateBar, 15000); kick(20000);
     });
+})();
+</script>
+
+<script>
+// ===== MARKS (Star / Revise / Doubt), REPEATED QUESTIONS, INSIGHTS & WEAK AREAS =====
+(function () {
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const KINDS = { star: ['fa-star', 'Star', 'amber'], revise: ['fa-rotate', 'Revise later', 'sky'], doubt: ['fa-circle-question', 'Doubt', 'rose'] };
+    let marks = {};
+    try { marks = JSON.parse(localStorage.getItem('upsc_marks_v1') || '{}') || {}; } catch (e) { marks = {}; }
+    const saveMarks = () => { try { localStorage.setItem('upsc_marks_v1', JSON.stringify(marks)); } catch (e) { showErrorPopup('Could not save your marks', e.message); } };
+
+    // ---------- Repeated question detection ----------
+    let repCache = null, repKey = '';
+    const norm = s => String(s || '').toLowerCase().replace(/[^a-z0-9ऀ-ॿ]+/g, '');
+    function sigOf(q) { const a = norm(q.question); return a.length >= 80 ? a : a + '|' + norm((q.options || []).join('')); }
+    function buildRep() {
+        const key = pyqDatabase.length + '|' + (pyqDatabase[0] && pyqDatabase[0].id);
+        if (repCache && key === repKey) return repCache;
+        const groups = {};
+        pyqDatabase.forEach(q => { const s = sigOf(q); if (s.length < 25) return; (groups[s] = groups[s] || []).push(q); });
+        const byId = {};
+        Object.values(groups).forEach(g => {
+            const years = new Set(g.map(q => String(q.year)));
+            if (years.size < 2) return;                // same-year twins are not "repeats"
+            g.forEach(q => { byId[q.id] = g.filter(o => String(o.year) !== String(q.year)).sort((a, b) => b.year - a.year).map(o => ({ id: o.id, exam: o.exam, year: o.year })); });
+        });
+        repCache = { byId, groups: Object.values(groups).filter(g => new Set(g.map(q => String(q.year))).size >= 2) };
+        repKey = key; return repCache;
+    }
+    const lbl = o => `${String(o.exam || '').replace(/^UPSC\s*/i, '')} ${o.year}`;
+    const _sd = window.saveDatabase;
+    window.saveDatabase = function () { repCache = null; const r = _sd.apply(this, arguments); try { renderChips(); } catch (e) {} return r; };
+
+    // ---------- Card UI ----------
+    function btnClass(k, on) {
+        const c = KINDS[k][2];
+        return `px-2.5 py-1 rounded-lg text-xs font-bold font-sans border flex items-center gap-1.5 transition ` + (on
+            ? (c === 'amber' ? 'bg-amber-500/25 text-amber-200 border-amber-400/60' : c === 'sky' ? 'bg-sky-500/25 text-sky-200 border-sky-400/60' : 'bg-rose-500/25 text-rose-200 border-rose-400/60')
+            : 'bg-black/20 text-gray-400 border-gray-700 hover:text-gray-200 hover:border-gray-500');
+    }
+    window.markBarHtml = function (q) {
+        const m = marks[q.id] || {};
+        const rep = buildRep().byId[q.id];
+        const badge = rep ? `<span title="Same question appeared in other years" class="px-2 py-1 rounded-lg text-xs font-bold font-sans bg-purple-500/20 text-purple-200 border border-purple-400/40"><i class="fa-solid fa-clone"></i> Repeated: ${rep.slice(0, 5).map(lbl).map(esc).join(', ')}${rep.length > 5 ? '…' : ''}</span>` : '';
+        return `<div class="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-700/40">
+            ${Object.keys(KINDS).map(k => `<button type="button" data-mark="${k}" data-id="${esc(q.id)}" onclick="toggleMark(this)" class="${btnClass(k, m[k])}"><i class="fa-solid ${KINDS[k][0]}"></i> ${KINDS[k][1]}</button>`).join('')}
+            ${badge}</div>`;
+    };
+    window.toggleMark = function (btn) {
+        const id = btn.dataset.id, k = btn.dataset.mark;
+        const m = marks[id] = marks[id] || {};
+        if (m[k]) delete m[k]; else m[k] = 1;
+        if (!Object.keys(m).length) delete marks[id];
+        saveMarks(); btn.className = btnClass(k, !!m[k]); renderChips();
+    };
+    window.passesMarkFilter = function (q) {
+        const f = window._markFilter; if (!f) return true;
+        if (f === 'repeat') return !!buildRep().byId[q.id];
+        return !!(marks[q.id] && marks[q.id][f]);
+    };
+    function renderChips() {
+        const el = document.getElementById('mark-chips'); if (!el) return;
+        const cnt = { star: 0, revise: 0, doubt: 0 };
+        Object.values(marks).forEach(m => Object.keys(cnt).forEach(k => { if (m[k]) cnt[k]++; }));
+        const rep = Object.keys(buildRep().byId).length;
+        const items = [['star', 'Starred', cnt.star], ['revise', 'Revise later', cnt.revise], ['doubt', 'Doubt', cnt.doubt], ['repeat', 'Repeated in other years', rep]];
+        el.innerHTML = '<span class="text-gray-500">Quick filter:</span>' + items.map(([k, t, n]) => {
+            const on = window._markFilter === k;
+            return `<button type="button" onclick="setMarkFilter('${k}')" class="px-2.5 py-1 rounded-full border text-xs font-semibold transition ${on ? 'bg-amber-600 text-white border-amber-400' : 'border-gray-600 text-gray-300 hover:border-amber-500 hover:text-amber-300'}">${t} (${n})</button>`;
+        }).join('') + (window._markFilter ? `<button type="button" onclick="setMarkFilter(null)" class="text-gray-400 hover:underline">Clear</button>` : '');
+    }
+    window.setMarkFilter = function (k) { window._markFilter = (window._markFilter === k) ? null : k; renderChips(); applyFilters(); };
+
+    // ---------- Insights tab ----------
+    const state = { exam: 'ALL' };
+    window.renderInsights = function () {
+        const root = document.getElementById('insights-root'); if (!root) return;
+        const exams = [...new Set(pyqDatabase.map(q => q.exam))].sort();
+        const qs = pyqDatabase.filter(q => state.exam === 'ALL' || q.exam === state.exam);
+        const years = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
+        const bySubj = {}, cell = {}, themeStat = {};
+        qs.forEach(q => {
+            const s = q.subject || 'Miscellaneous', y = Number(q.year);
+            bySubj[s] = (bySubj[s] || 0) + 1;
+            cell[s + '|' + y] = (cell[s + '|' + y] || 0) + 1;
+            const tk = s + '||' + (q.theme || 'General');
+            const t = themeStat[tk] = themeStat[tk] || { s, theme: q.theme || 'General', total: 0, y: {} };
+            t.total++; t.y[y] = (t.y[y] || 0) + 1;
+        });
+        const subjects = Object.keys(bySubj).sort((a, b) => bySubj[b] - bySubj[a]);
+        const maxS = Math.max(1, ...Object.values(bySubj));
+        let max = 1; Object.values(cell).forEach(v => { if (v > max) max = v; });
+        const cols = years.slice(-20);
+        const recentYears = years.slice(-5), priorYears = years.slice(0, -5);
+        const themes = Object.values(themeStat).map(t => {
+            const rec = recentYears.reduce((a, y) => a + (t.y[y] || 0), 0), pri = priorYears.reduce((a, y) => a + (t.y[y] || 0), 0);
+            const rr = rec / Math.max(1, recentYears.length), pr = pri / Math.max(1, priorYears.length);
+            const trend = !priorYears.length ? '' : (rr > pr * 1.3 && rec >= 2) ? 'up' : (rr < pr * 0.7 && pri >= 3) ? 'down' : 'flat';
+            return { ...t, rec, pri, trend };
+        }).sort((a, b) => b.total - a.total).slice(0, 20);
+        const rep = buildRep().groups.map(g => ({ g, n: new Set(g.map(q => String(q.year))).size })).sort((a, b) => b.n - a.n).slice(0, 8);
+
+        let h = `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300"><label>Exam: <select id="ins-exam" class="bg-black/30 border border-gray-600 rounded-lg px-2 py-1">${['ALL', ...exams].map(e => `<option value="${esc(e)}" ${e === state.exam ? 'selected' : ''}>${e === 'ALL' ? 'All exams' : esc(e)}</option>`).join('')}</select></label>
+            <span><b class="text-amber-300">${qs.length}</b> questions &middot; <b class="text-amber-300">${years.length}</b> years${years.length ? ` (${years[0]}–${years[years.length - 1]})` : ''}</span></div>`;
+        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-3">Questions by subject</h3>` +
+            subjects.map(s => `<div class="flex items-center gap-2 text-xs mb-1.5"><div class="w-36 shrink-0 text-gray-300 truncate">${esc(s)}</div><div class="flex-1 bg-black/30 rounded h-4"><div style="width:${(bySubj[s] / maxS * 100).toFixed(1)}%;background:#f59e0b;height:100%;border-radius:4px"></div></div><div class="w-24 text-right text-gray-300">${bySubj[s]} <span class="text-gray-500">(${(bySubj[s] / Math.max(1, years.length)).toFixed(1)}/yr)</span></div></div>`).join('') + `</div>`;
+        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-3">Subject &times; Year (number of questions)</h3><div style="overflow-x:auto"><table class="text-xs border-collapse"><thead><tr><th class="text-left pr-3 pb-1 text-gray-400">Subject</th>${cols.map(y => `<th class="px-1 pb-1 text-gray-400 font-normal">${String(y).slice(-2)}</th>`).join('')}</tr></thead><tbody>` +
+            subjects.map(s => `<tr><td class="pr-3 py-0.5 text-gray-300 whitespace-nowrap">${esc(s)}</td>${cols.map(y => { const v = cell[s + '|' + y] || 0; return `<td title="${esc(s)} ${y}: ${v}" style="background:rgba(245,158,11,${v ? (0.12 + 0.75 * v / max).toFixed(2) : 0});min-width:26px;text-align:center;color:#e5e7eb;border:1px solid rgba(255,255,255,.04)">${v || ''}</td>`; }).join('')}</tr>`).join('') + `</tbody></table></div><div class="text-[11px] text-gray-500 mt-2">Columns are years (last 2 digits). Darker = more questions.</div></div>`;
+        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-1">Most asked micro-themes</h3><div class="text-[11px] text-gray-500 mb-3">Trend compares the last ${recentYears.length} years with the earlier years.</div><table class="w-full text-xs"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Theme</th><th>Subject</th><th>Total</th><th>Last ${recentYears.length} yrs</th><th>Trend</th><th></th></tr></thead><tbody>` +
+            themes.map(t => `<tr class="border-t border-gray-700/40"><td class="py-1 pr-2 text-gray-200">${esc(t.theme)}</td><td class="text-gray-400">${esc(t.s)}</td><td>${t.total}</td><td>${t.rec}</td><td>${t.trend === 'up' ? '<span class="text-emerald-400">&#9650; Rising</span>' : t.trend === 'down' ? '<span class="text-rose-400">&#9660; Falling</span>' : t.trend === 'flat' ? '<span class="text-gray-500">Steady</span>' : ''}</td><td><button type="button" data-go-subject="${esc(t.s)}" data-go-theme="${esc(t.theme)}" class="text-amber-300 hover:underline">View</button></td></tr>`).join('') + `</tbody></table></div>`;
+        h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-2">Questions repeated across years</h3>` + (rep.length ? `<div class="text-xs text-gray-400 mb-2">${buildRep().groups.length} questions have appeared in more than one year. <button type="button" id="ins-show-repeat" class="text-amber-300 hover:underline">Show them all in Theme Explorer</button></div><ul class="text-xs space-y-1.5">` +
+            rep.map(r => `<li class="border-t border-gray-700/40 pt-1.5"><span class="text-purple-300 font-bold">${r.n} years</span> (${r.g.map(q => esc(lbl(q))).join(', ')}) &mdash; <span class="text-gray-300">${esc(String(r.g[0].question).replace(/\s+/g, ' ').slice(0, 140))}…</span></li>`).join('') + '</ul>' : '<div class="text-xs text-gray-500">No repeated questions found yet.</div>') + `</div>`;
+        h += weakHtml();
+        root.innerHTML = h;
+        const sel = root.querySelector('#ins-exam'); if (sel) sel.onchange = () => { state.exam = sel.value; renderInsights(); };
+        const sr = root.querySelector('#ins-show-repeat'); if (sr) sr.onclick = () => { window._markFilter = 'repeat'; resetKeepMark(); };
+        root.onclick = e => { const b = e.target.closest('[data-go-theme]'); if (b) goToTheme(b.dataset.goSubject, b.dataset.goTheme); };
+    };
+    function resetKeepMark() {
+        ['filter-exam', 'filter-year', 'filter-subject', 'filter-pcs'].forEach(id => { const e = document.getElementById(id); if (e) e.value = 'ALL'; });
+        document.getElementById('filter-search').value = '';
+        populateExplorerThemes(); switchTab('explorer'); renderChips(); applyFilters();
+    }
+    function goToTheme(subject, theme) {
+        window._markFilter = null;
+        ['filter-exam', 'filter-year', 'filter-pcs'].forEach(id => { const e = document.getElementById(id); if (e) e.value = 'ALL'; });
+        document.getElementById('filter-search').value = '';
+        const sub = document.getElementById('filter-subject'); sub.value = subject; if (sub.value !== subject) sub.value = 'ALL';
+        populateExplorerThemes();
+        const th = document.getElementById('filter-theme'); th.value = theme; if (th.value !== theme) th.value = 'ALL';
+        switchTab('explorer'); renderChips(); applyFilters();
+    }
+
+    // ---------- Test attempts & weak areas ----------
+    function getAttempts() { try { return JSON.parse(localStorage.getItem('upsc_cbt_attempts_v1') || '[]') || []; } catch (e) { return []; } }
+    window.recordCbtAttempt = function () {
+        const s = cbtSession; if (!s || s.isViewOnly) return null;
+        const test = s.test, mk = test.marking || { positive: 2, negative: 2 / 3 };
+        const items = [];
+        let c = 0, w = 0, k = 0;
+        test.questions.forEach((q, i) => {
+            const sel = s.states[i] && s.states[i].selectedOption, ans = String(q.answer || '').toUpperCase();
+            if (!/^[A-D]$/.test(ans)) return;                 // no key -> cannot judge
+            const st = !sel ? 'skip' : (sel === ans ? 'right' : 'wrong');
+            if (st === 'right') c++; else if (st === 'wrong') w++; else k++;
+            const tag = autoDetectSubjectAndTheme(String(q.text || '') + ' ' + (q.options || []).join(' '));
+            items.push({ n: q.qNo, st, subj: tag.subject, theme: tag.theme });
+        });
+        const score = c * mk.positive - w * mk.negative;
+        const rec = { id: 'att_' + Date.now(), testId: test.id, title: test.title, ts: Date.now(), right: c, wrong: w, skip: k, score: Math.round(score * 100) / 100, max: Math.round(items.length * mk.positive * 100) / 100, pos: mk.positive, neg: mk.negative, items };
+        const all = getAttempts(); all.unshift(rec);
+        try { localStorage.setItem('upsc_cbt_attempts_v1', JSON.stringify(all.slice(0, 200))); } catch (e) { showErrorPopup('Could not save your test result', e.message); }
+        return rec;
+    };
+    window.showCbtResultPopup = function (rec) {
+        if (!rec) return;
+        const acc = (rec.right + rec.wrong) ? Math.round(rec.right / (rec.right + rec.wrong) * 100) : 0;
+        showPopup({ title: 'Test submitted', type: 'ok', html: `<div class="font-bold">${esc(rec.title)}</div>
+            <div class="text-lg">Score: <b class="text-emerald-300">${rec.score}</b> / ${rec.max}</div>
+            <div>Correct <b>${rec.right}</b> &middot; Wrong <b>${rec.wrong}</b> &middot; Skipped <b>${rec.skip}</b> &middot; Accuracy of attempted: <b>${acc}%</b></div>
+            <button type="button" id="res-weak" class="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white rounded-lg text-xs font-bold">See my weak areas</button>`,
+            onOpen: (b, close) => { b.querySelector('#res-weak').onclick = () => { close(); switchTab('insights'); }; } });
+    };
+    function weakHtml() {
+        const at = getAttempts();
+        let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60"><h3 class="font-bold text-amber-300 text-sm mb-1">Weak areas (from your Test Series attempts)</h3>`;
+        if (!at.length) return h + `<div class="text-xs text-gray-500">No attempts saved yet. Take a test in Test Series (CBT) and press Submit - results are saved automatically.</div></div>`;
+        const subj = {}, th = {}; let lost = 0;
+        at.forEach(a => a.items.forEach(it => {
+            [[subj, it.subj], [th, it.subj + '||' + it.theme]].forEach(([m, key]) => {
+                const o = m[key] = m[key] || { right: 0, wrong: 0, skip: 0, lost: 0, subj: it.subj, theme: it.theme };
+                o[it.st === 'right' ? 'right' : it.st === 'wrong' ? 'wrong' : 'skip']++;
+                if (it.st === 'wrong') o.lost += (a.pos + a.neg);
+            });
+        }));
+        const acc = o => (o.right + o.wrong) ? o.right / (o.right + o.wrong) : null;
+        const sRows = Object.values(subj).filter(o => o.right + o.wrong + o.skip >= 1).sort((a, b) => b.lost - a.lost);
+        const tRows = Object.values(th).filter(o => o.right + o.wrong >= 2 && o.wrong > 0).sort((a, b) => (acc(a) - acc(b)) || (b.lost - a.lost)).slice(0, 10);
+        h += `<div class="text-[11px] text-gray-500 mb-3">${at.length} test attempt${at.length > 1 ? 's' : ''}. Subject/theme of test questions is guessed from keywords, so treat it as a guide. "Marks lost" = wrong answers &times; (marks for right + penalty).</div>`;
+        h += `<table class="w-full text-xs mb-4"><thead><tr class="text-gray-400 text-left"><th class="pb-1">Subject</th><th>Right</th><th>Wrong</th><th>Skipped</th><th>Accuracy</th><th>Marks lost</th></tr></thead><tbody>` +
+            sRows.map(o => { const a = acc(o); return `<tr class="border-t border-gray-700/40"><td class="py-1 text-gray-200">${esc(o.subj)}</td><td>${o.right}</td><td>${o.wrong}</td><td>${o.skip}</td><td style="color:${a === null ? '#9ca3af' : a < .5 ? '#fb7185' : a < .7 ? '#fbbf24' : '#34d399'}">${a === null ? '-' : Math.round(a * 100) + '%'}</td><td>${o.lost.toFixed(1)}</td></tr>`; }).join('') + `</tbody></table>`;
+        h += `<h4 class="font-bold text-rose-300 text-xs mb-1">Weakest micro-themes (practise these)</h4>` + (tRows.length ? `<table class="w-full text-xs"><tbody>` + tRows.map(o => `<tr class="border-t border-gray-700/40"><td class="py-1 text-gray-200">${esc(o.theme)}</td><td class="text-gray-400">${esc(o.subj)}</td><td>${o.right}/${o.right + o.wrong} right (${Math.round(acc(o) * 100)}%)</td><td><button type="button" data-go-subject="${esc(o.subj)}" data-go-theme="${esc(o.theme)}" class="text-amber-300 hover:underline">Practise PYQs</button></td></tr>`).join('') + `</tbody></table>` : `<div class="text-xs text-gray-500">Not enough attempts per theme yet (need at least 2 answered questions in a theme).</div>`);
+        h += `<h4 class="font-bold text-gray-300 text-xs mt-4 mb-1">Recent tests</h4><ul class="text-xs space-y-1">` + at.slice(0, 6).map(a => `<li class="text-gray-300">${new Date(a.ts).toLocaleDateString()} &mdash; ${esc(a.title)}: <b>${a.score}/${a.max}</b> (R ${a.right} / W ${a.wrong} / S ${a.skip})</li>`).join('') + `</ul></div>`;
+        return h;
+    }
+    document.addEventListener('DOMContentLoaded', () => { renderChips(); });
 })();
 </script>
 
