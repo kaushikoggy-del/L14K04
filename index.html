@@ -172,6 +172,21 @@
             background: rgba(100, 116, 139, 0.7);
         }
     </style>
+    <style id="split-css">
+        /* SPLIT VIEW: PYQ list is about one A4-column wide; explanation / analysis open in the empty space on the right */
+        #pyq-split .dock-active { border-color: #f59e0b !important; box-shadow: 0 0 0 1px #f59e0b !important; }
+        #detail-dock { background: rgba(17,24,39,.65); border: 1px solid rgba(75,85,99,.6); border-radius: 12px; padding: 16px; }
+        .dock-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; font-size: 12px; }
+        .dock-q { margin: 10px 0 14px; padding: 10px 12px; border-left: 3px solid #f59e0b; background: rgba(0,0,0,.25); border-radius: 6px; font-size: 12px; color: #9ca3af; }
+        .dock-title { font-weight: 700; font-size: 13px; margin: 6px 0 8px; }
+        @media (min-width: 1024px) {
+            #pyq-split.split-on { display: flex; gap: 20px; align-items: flex-start; }
+            #pyq-split.split-on #pyq-list-container { width: 380px; flex: none; }
+            #pyq-split.split-on #pyq-list-container .grid { grid-template-columns: minmax(0, 1fr) !important; }
+            #pyq-split.split-on #pyq-list-container [id^="analysis-"], #pyq-split.split-on #pyq-list-container [id^="expl-panel-"] { display: none !important; }
+            #pyq-split.split-on #detail-dock { flex: 1; min-width: 0; position: sticky; top: 112px; max-height: calc(100vh - 128px); overflow-y: auto; }
+        }
+    </style>
     <style id="dark-grey-override">
   /* 1. Fix Windows Chrome Dropdown <option> readability */
   select, select option {
@@ -430,6 +445,9 @@
                         <button onclick="toggleExpandAll()" id="btn-expand-all" class="px-3 py-2 rounded-lg border border-gray-600 text-xs font-semibold text-gray-300 hover:border-amber-500 hover:text-amber-400 transition flex items-center gap-1.5 whitespace-nowrap">
                             <i class="fa-solid fa-angles-down"></i> Expand Analysis
                         </button>
+                        <button onclick="toggleSplitView()" id="btn-split-view" class="px-3 py-2 rounded-lg border border-gray-600 text-xs font-semibold text-gray-300 hover:border-amber-500 hover:text-amber-400 transition flex items-center gap-1.5 whitespace-nowrap">
+                            <i class="fa-solid fa-table-columns"></i> Side Panel
+                        </button>
                     </div>
                 </div>
             </div>
@@ -450,8 +468,11 @@
             </div>
 
             <!-- PYQ LIST CONTAINER -->
+            <div id="pyq-split" class="split-on">
             <div id="pyq-list-container" class="space-y-4">
                 <!-- Dynamically Populated PYQ Cards -->
+            </div>
+            <aside id="detail-dock" class="hidden"></aside>
             </div>
 
             <!-- Zero Results Card -->
@@ -5161,6 +5182,82 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         if (inp) inp.addEventListener('change', ev => { const f = ev.target.files[0]; if (!f) return; const r = new FileReader(); r.onload = async () => { try { let n = 0; for (const x of JSON.parse(r.result)) if (x && x.id && x.text) { await put(x); n++; } bar(); showPopup({ title: 'Imported', type: 'ok', html: `<div>Imported ${n} items.</div>` }); } catch (e) { showErrorPopup('Could not import', e.message); } }; r.readAsText(f); ev.target.value = ''; });
         await loadAll(); bar(); setInterval(bar, 15000); kick(30000);
     });
+})();
+</script>
+
+<script>
+// ===== SPLIT VIEW: narrow PYQ column + side panel (explanation, elimination logic, analysis open on the right) =====
+(function () {
+    const sp = () => document.getElementById('pyq-split'), dk = () => document.getElementById('detail-dock');
+    const wide = () => window.matchMedia('(min-width: 1024px)').matches;
+    const isOn = () => { try { return localStorage.getItem('pyq_split') !== '0'; } catch (e) { return true; } };
+    const active = () => !!sp() && sp().classList.contains('split-on') && wide();
+    const BTN_ON = 'px-3 py-2 rounded-lg bg-amber-600 text-white border border-amber-500 text-xs font-semibold transition flex items-center gap-1.5 whitespace-nowrap shadow';
+    const BTN_OFF = 'px-3 py-2 rounded-lg border border-gray-600 text-xs font-semibold text-gray-300 hover:border-amber-500 hover:text-amber-400 transition flex items-center gap-1.5 whitespace-nowrap';
+    const esc = t => String(t ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    let st = { id: null, expl: false, ana: false }, held = [];
+    const origExpl = window.toggleExplanation, origAna = window.toggleAnalysis, origDraw = window.drawCards;
+
+    function release() {                       // send moved panels back into their cards
+        held.forEach(h => {
+            if (h.home && h.home.isConnected) { h.home.appendChild(h.el); h.el.classList.toggle('hidden', !(h.kind === 'ana' && typeof isExpandedAll !== 'undefined' && isExpandedAll)); }
+            else h.el.remove();
+        });
+        held = [];
+        document.querySelectorAll('.dock-active').forEach(c => c.classList.remove('dock-active'));
+    }
+    function plain(html) { const t = document.createElement('div'); t.innerHTML = html || ''; return (t.textContent || '').replace(/\s+/g, ' ').trim(); }
+    function sync() {
+        release();
+        const d = dk(); if (!d) return;
+        if (!st.id || (!st.expl && !st.ana)) { d.classList.add('hidden'); d.innerHTML = ''; return; }
+        const q = pyqDatabase.find(x => x.id === st.id);
+        if (!q) { st = { id: null, expl: false, ana: false }; d.classList.add('hidden'); d.innerHTML = ''; return; }
+        const qt = plain(q.question); 
+        d.classList.remove('hidden');
+        d.innerHTML = `<div class="dock-head font-sans"><div class="flex flex-wrap items-center gap-2"><span class="px-2.5 py-0.5 rounded font-bold border bg-amber-500/20 text-amber-300 border-amber-500/30">${esc(q.exam)} ${esc(q.year)}</span><span class="text-gray-300">${esc(q.subject)}</span><span class="text-amber-400/90">${esc(q.theme)}</span><span class="px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-bold">Key: ${esc(q.officialKey || 'Ans')}</span></div><button type="button" onclick="dockClose()" class="text-gray-400 hover:text-white px-2" title="Close"><i class="fa-solid fa-xmark"></i></button></div>
+            <div class="dock-q font-pyq-text">${esc(qt.length > 240 ? qt.slice(0, 240) + '...' : qt)}</div>
+            <div id="dock-expl"></div><div id="dock-ana"></div>`;
+        const mark = (id) => { const c = document.getElementById(id); const card = c && c.closest('.bg-card'); if (card) card.classList.add('dock-active'); };
+        if (st.expl) {
+            const panel = document.getElementById('expl-panel-' + st.id);
+            if (panel) {
+                if (panel.classList.contains('hidden')) origExpl(st.id);   // renders it and un-hides
+                const slot = d.querySelector('#dock-expl');
+                slot.innerHTML = '<div class="dock-title font-sans text-sky-300"><i class="fa-solid fa-lightbulb"></i> Explanation</div>';
+                held.push({ el: panel, home: panel.parentNode, kind: 'expl' }); slot.appendChild(panel);
+            }
+        }
+        if (st.ana) {
+            const an = document.getElementById('analysis-' + st.id);
+            if (an) {
+                const slot = d.querySelector('#dock-ana');
+                slot.innerHTML = '<div class="dock-title font-sans text-amber-400 mt-4"><i class="fa-solid fa-brain"></i> AI Elimination &amp; Peripheral Knowledge Analysis</div>';
+                an.classList.remove('hidden');
+                held.push({ el: an, home: an.parentNode, kind: 'ana' }); slot.appendChild(an);
+            }
+        }
+        mark('chevron-' + st.id);
+        d.scrollTop = 0;
+    }
+    function toggle(id, which) {
+        if (st.id !== id) st = { id, expl: false, ana: false };
+        st[which] = !st[which];
+        sync();
+    }
+    function reset() { st = { id: null, expl: false, ana: false }; sync(); }
+    window.dockClose = reset;
+    window.toggleExplanation = function (id) { return active() ? toggle(id, 'expl') : origExpl(id); };
+    window.toggleAnalysis = function (id) { return active() ? toggle(id, 'ana') : origAna(id); };
+    window.drawCards = function (keep) { reset(); return origDraw(keep); };
+
+    function apply() {
+        const box = sp(); if (box) box.classList.toggle('split-on', isOn());
+        const b = document.getElementById('btn-split-view'); if (b) b.className = isOn() ? BTN_ON : BTN_OFF;
+        reset();
+    }
+    window.toggleSplitView = function () { try { localStorage.setItem('pyq_split', isOn() ? '0' : '1'); } catch (e) {} apply(); };
+    document.addEventListener('DOMContentLoaded', () => { apply(); try { window.matchMedia('(min-width: 1024px)').addEventListener('change', reset); } catch (e) {} });
 })();
 </script>
 
