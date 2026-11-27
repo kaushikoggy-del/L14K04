@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<script>(function(){try{if(!localStorage.getItem('app_pw_v1')||sessionStorage.getItem('app_unlocked')!=='1'){var st=document.createElement('style');st.id='lock-hide';st.textContent='body>*:not(#lock-screen){visibility:hidden!important}';document.documentElement.appendChild(st);}}catch(e){}})();</script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
     <meta charset="UTF-8">
@@ -301,12 +300,6 @@
                         <input type="file" id="json-file-input" accept=".json" class="hidden" onchange="importDatabaseJSON(event)">
                         <button onclick="openDisplaySettingsModal()" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-purple-500/10 hover:text-purple-400 flex items-center gap-2.5 transition">
                             <i class="fa-solid fa-eye text-purple-400 w-4"></i> Display & Comfort Panel
-                        </button>
-                        <button onclick="changePassword()" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-rose-500/10 hover:text-rose-400 flex items-center gap-2.5 transition">
-                            <i class="fa-solid fa-lock text-rose-400 w-4"></i> Password & Recovery Code
-                        </button>
-                        <button onclick="lockNow()" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-rose-500/10 hover:text-rose-400 flex items-center gap-2.5 transition">
-                            <i class="fa-solid fa-user-lock text-rose-400 w-4"></i> Lock Site Now
                         </button>
                     </div>
                 </div>
@@ -5045,146 +5038,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
 })();
 </script>
 
-<script>
-// ===== PASSWORD LOCK (salted PBKDF2 hashes stored only in this browser) + RECOVERY CODE =====
-(function () {
-    const KEY = 'app_pw_v1', SESS = 'app_unlocked';
-    const ls = { get: k => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} } };
-    const ss = { get: k => { try { return sessionStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { sessionStorage.setItem(k, v); } catch (e) {} }, del: k => { try { sessionStorage.removeItem(k); } catch (e) {} } };
-    const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
-    const unb64 = s => Uint8Array.from(atob(s), c => c.charCodeAt(0));
-    const rnd = n => { const a = new Uint8Array(n); (window.crypto || {}).getRandomValues ? crypto.getRandomValues(a) : a.forEach((_, i) => a[i] = Math.floor(Math.random() * 256)); return a; };
-    async function derive(pw, saltB64) {
-        const salt = unb64(saltB64);
-        if (window.crypto && crypto.subtle) {
-            const k = await crypto.subtle.importKey('raw', new TextEncoder().encode(pw), 'PBKDF2', false, ['deriveBits']);
-            return b64(await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 150000, hash: 'SHA-256' }, k, 256));
-        }
-        let h = 2166136261; const s = pw + saltB64; for (let r = 0; r < 20000; r++) for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return 'f' + h;
-    }
-    const getRec = () => { try { return JSON.parse(ls.get(KEY) || 'null'); } catch (e) { return null; } };
-    const normCode = c => String(c || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    function newCode() { const al = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; const r = rnd(12); let s = ''; r.forEach(x => s += al[x % al.length]); return s.slice(0, 4) + '-' + s.slice(4, 8) + '-' + s.slice(8, 12); }
-    async function saveAll(pw, code) {     // password hash + recovery-code hash
-        const salt = b64(rnd(16)), rsalt = b64(rnd(16));
-        const rec = { salt, hash: await derive(pw, salt) };
-        if (code) { rec.rsalt = rsalt; rec.rhash = await derive(normCode(code), rsalt); } else { const old = getRec(); if (old && old.rhash) { rec.rsalt = old.rsalt; rec.rhash = old.rhash; } }
-        ls.set(KEY, JSON.stringify(rec));
-    }
-    async function check(pw) { const r = getRec(); return !!r && (await derive(pw, r.salt)) === r.hash; }
-    async function checkCode(code) { const r = getRec(); return !!(r && r.rhash) && (await derive(normCode(code), r.rsalt)) === r.rhash; }
-    async function saveCodeOnly(code) { const r = getRec(); if (!r) return; r.rsalt = b64(rnd(16)); r.rhash = await derive(normCode(code), r.rsalt); ls.set(KEY, JSON.stringify(r)); }
-
-    function unlockUI() { const o = document.getElementById('lock-screen'); if (o) o.remove(); const st = document.getElementById('lock-hide'); if (st) st.remove(); }
-    const CSS_INP = 'width:100%;box-sizing:border-box;padding:10px 12px;margin-top:10px;border-radius:10px;border:1px solid #4b5563;background:#111827;color:#fff;font-size:15px;';
-    const CSS_BTN = 'width:100%;margin-top:14px;padding:10px;border-radius:10px;border:0;background:#d97706;color:#fff;font-weight:700;font-size:15px;cursor:pointer;';
-    function shell(inner) {
-        unlockUI();
-        const st = document.createElement('style'); st.id = 'lock-hide'; st.textContent = 'body>*:not(#lock-screen){visibility:hidden!important}'; document.documentElement.appendChild(st);
-        const o = document.createElement('div'); o.id = 'lock-screen';
-        o.style.cssText = 'position:fixed;inset:0;z-index:2147483000;background:#0b0d12;display:flex;align-items:center;justify-content:center;padding:16px;font-family:system-ui,Segoe UI,Arial,sans-serif;color:#e5e7eb;overflow-y:auto;';
-        o.innerHTML = `<div style="width:100%;max-width:400px;background:#161a22;border:1px solid #374151;border-radius:16px;padding:26px;box-shadow:0 20px 60px rgba(0,0,0,.6)"><div style="font-size:34px;text-align:center">&#128274;</div><div style="font-size:20px;font-weight:800;text-align:center;margin-top:4px">UPSC PYQ Analytics</div>${inner}</div>`;
-        document.documentElement.appendChild(o); return o;
-    }
-    function download(name, text) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'text/plain' })); a.download = name; a.click(); }
-    function recoveryScreen(code, onDone) {
-        const o = shell(`<div style="text-align:center;color:#9ca3af;font-size:13px;margin-top:4px">Save your recovery code</div>
-            <div style="margin-top:12px;font-size:13px;line-height:1.5;color:#d1d5db">If you ever forget your password, this code lets you set a new one <b>without losing any data</b>. It is shown only once. Keep it somewhere safe (notes app, photo, paper).</div>
-            <div id="rc-code" style="margin-top:14px;text-align:center;font-size:26px;font-weight:800;letter-spacing:2px;color:#fbbf24;background:#0f131a;border:1px dashed #b45309;border-radius:12px;padding:14px;user-select:all">${code}</div>
-            <div style="display:flex;gap:8px;margin-top:10px"><button type="button" id="rc-copy" style="flex:1;padding:8px;border-radius:8px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;cursor:pointer">Copy</button><button type="button" id="rc-dl" style="flex:1;padding:8px;border-radius:8px;border:1px solid #4b5563;background:#111827;color:#e5e7eb;cursor:pointer">Download .txt</button></div>
-            <label style="display:flex;gap:8px;align-items:center;margin-top:14px;font-size:13px"><input type="checkbox" id="rc-ok"> I have saved this code</label>
-            <button type="button" id="rc-go" disabled style="${CSS_BTN};opacity:.5">Continue</button>`);
-        const ok = o.querySelector('#rc-ok'), go = o.querySelector('#rc-go');
-        ok.onchange = () => { go.disabled = !ok.checked; go.style.opacity = ok.checked ? '1' : '.5'; };
-        o.querySelector('#rc-copy').onclick = () => { try { navigator.clipboard.writeText(code); } catch (e) {} o.querySelector('#rc-copy').textContent = 'Copied'; };
-        o.querySelector('#rc-dl').onclick = () => download('UPSC_PYQ_Recovery_Code.txt', 'UPSC PYQ Analytics - password recovery code\n\n' + code + '\n\nKeep this file private.');
-        go.onclick = () => { ss.set(SESS, '1'); unlockUI(); if (onDone) onDone(); };
-    }
-    function buildScreen(mode) {
-        const create = mode === 'create';
-        const o = shell(`<div style="text-align:center;color:#9ca3af;font-size:13px;margin-top:4px">${create ? 'Create a password for this site' : 'Enter your password to continue'}</div>
-            <form id="lock-form" autocomplete="off">
-              <input id="lock-pw" type="password" placeholder="${create ? 'New password (min 4 characters)' : 'Password'}" style="${CSS_INP}">
-              ${create ? `<input id="lock-pw2" type="password" placeholder="Type it again" style="${CSS_INP}">` : ''}
-              <div id="lock-err" style="color:#fb7185;font-size:13px;min-height:18px;margin-top:8px"></div>
-              <button type="submit" style="${CSS_BTN}">${create ? 'Continue' : 'Unlock'}</button>
-            </form>
-            ${create ? `<div style="color:#9ca3af;font-size:12px;margin-top:12px;line-height:1.5">The password is saved only in this browser (as a scrambled hash). Next you will get a recovery code in case you forget it.</div>`
-            : `<div style="text-align:center;margin-top:14px"><a href="#" id="lock-forgot" style="color:#9ca3af;font-size:12px">Forgot password?</a></div>
-               <div id="lock-forgot-box" style="display:none;margin-top:10px;font-size:12px;color:#d1d5db;line-height:1.5;background:#0f131a;border:1px solid #374151;border-radius:10px;padding:10px">
-                 Enter the <b>recovery code</b> you saved when you created the password. Your data stays safe.
-                 <input id="fg-code" style="${CSS_INP}" placeholder="XXXX-XXXX-XXXX"><input id="fg-new" type="password" style="${CSS_INP}" placeholder="New password (min 4 characters)"><input id="fg-new2" type="password" style="${CSS_INP}" placeholder="New password again">
-                 <div id="fg-err" style="color:#fb7185;min-height:16px;margin-top:6px"></div>
-                 <button type="button" id="fg-go" style="${CSS_BTN}">Reset password</button>
-                 <div style="text-align:center;margin-top:12px"><a href="#" id="lost-code" style="color:#6b7280;font-size:11px">I lost the recovery code too</a></div>
-                 <div id="lost-box" style="display:none;margin-top:8px;color:#d1d5db">Without the code the only way in is to erase this site's saved data (questions, notes, test results, explanations) - unless you have a backup file to restore afterwards. Type <b>RESET</b> to erase everything.<input id="lock-reset-in" style="${CSS_INP}" placeholder="Type RESET"><button type="button" id="lock-reset-btn" style="${CSS_BTN};background:#be123c">Erase everything</button></div>
-               </div>`}`);
-        const pw = o.querySelector('#lock-pw'); setTimeout(() => pw && pw.focus(), 50);
-        let fails = 0, busy = false;
-        o.querySelector('#lock-form').onsubmit = async ev => {
-            ev.preventDefault(); if (busy) return; busy = true;
-            const err = o.querySelector('#lock-err'); err.textContent = '';
-            try {
-                const v = pw.value;
-                if (create) {
-                    const v2 = o.querySelector('#lock-pw2').value;
-                    if (v.length < 4) err.textContent = 'Please use at least 4 characters.';
-                    else if (v !== v2) err.textContent = 'The two passwords do not match.';
-                    else { const code = newCode(); await saveAll(v, code); recoveryScreen(code); }
-                } else if (await check(v)) { ss.set(SESS, '1'); unlockUI(); }
-                else { fails++; err.textContent = 'Wrong password.'; pw.value = ''; if (fails >= 3) { err.textContent = 'Wrong password. Please wait...'; await new Promise(r => setTimeout(r, Math.min(15000, 1500 * fails))); err.textContent = 'Wrong password. Try again.'; } }
-            } catch (e) { err.textContent = 'Something went wrong: ' + e.message; }
-            busy = false;
-        };
-        const tog = (a, b, ev) => { if (a) a.onclick = e => { e.preventDefault(); const bx = o.querySelector(b); bx.style.display = bx.style.display === 'none' ? 'block' : 'none'; }; };
-        tog(o.querySelector('#lock-forgot'), '#lock-forgot-box'); tog(o.querySelector('#lost-code'), '#lost-box');
-        const fg = o.querySelector('#fg-go');
-        if (fg) fg.onclick = async () => {
-            const e = o.querySelector('#fg-err'); e.textContent = '';
-            const code = o.querySelector('#fg-code').value, n = o.querySelector('#fg-new').value;
-            if (!getRec() || !getRec().rhash) { e.textContent = 'No recovery code was set on this browser. Use the erase option below.'; return; }
-            if (!(await checkCode(code))) { e.textContent = 'That recovery code is not correct.'; return; }
-            if (n.length < 4) { e.textContent = 'Use at least 4 characters.'; return; }
-            if (n !== o.querySelector('#fg-new2').value) { e.textContent = 'New passwords do not match.'; return; }
-            const nc = newCode(); await saveAll(n, nc); recoveryScreen(nc);
-        };
-        const rb = o.querySelector('#lock-reset-btn');
-        if (rb) rb.onclick = async () => {
-            if (o.querySelector('#lock-reset-in').value.trim() !== 'RESET') { o.querySelector('#fg-err').textContent = 'Type RESET (capital letters) to confirm.'; return; }
-            try { localStorage.clear(); sessionStorage.clear(); if (indexedDB.databases) { for (const d of await indexedDB.databases()) indexedDB.deleteDatabase(d.name); } } catch (e) {}
-            location.reload();
-        };
-    }
-    if (!getRec()) buildScreen('create'); else if (ss.get(SESS) !== '1') buildScreen('enter');
-
-    window.lockNow = function () { ss.del(SESS); location.reload(); };
-    window.changePassword = function () {
-        const hasCode = !!(getRec() && getRec().rhash);
-        const f = 'width:100%;padding:8px;border-radius:8px;border:1px solid #4b5563;background:#000;color:#fff';
-        showPopup({ title: 'Password & recovery code', type: 'info', html: `<input id="cp-old" type="password" placeholder="Current password" style="${f}">
-            <input id="cp-new" type="password" placeholder="New password (leave empty to keep the same)" style="${f}"><input id="cp-new2" type="password" placeholder="New password again" style="${f}">
-            <div id="cp-err" style="color:#fb7185;font-size:12px"></div>
-            <div class="flex flex-wrap gap-2"><button type="button" id="cp-save" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold">Change password</button>
-            <button type="button" id="cp-code" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold">${hasCode ? 'Make a new recovery code' : 'Create a recovery code'}</button></div>
-            <div class="text-xs text-gray-400">${hasCode ? 'A recovery code is already set. Making a new one replaces the old one.' : 'No recovery code yet - create one so you never lose access.'}</div><div id="cp-out"></div>`,
-            onOpen: (b, close) => {
-                const err = b.querySelector('#cp-err');
-                b.querySelector('#cp-save').onclick = async () => {
-                    if (!(await check(b.querySelector('#cp-old').value))) { err.textContent = 'Current password is wrong.'; return; }
-                    const n = b.querySelector('#cp-new').value; if (n.length < 4) { err.textContent = 'Use at least 4 characters.'; return; }
-                    if (n !== b.querySelector('#cp-new2').value) { err.textContent = 'New passwords do not match.'; return; }
-                    await saveAll(n, null); close(); showPopup({ title: 'Done', type: 'ok', html: '<div>Your password has been changed.</div>' });
-                };
-                b.querySelector('#cp-code').onclick = async () => {
-                    if (!(await check(b.querySelector('#cp-old').value))) { err.textContent = 'Enter your current password first.'; return; }
-                    err.textContent = ''; const c = newCode(); await saveCodeOnly(c);
-                    b.querySelector('#cp-out').innerHTML = `<div style="text-align:center;font-size:22px;font-weight:800;letter-spacing:2px;color:#fbbf24;background:#0f131a;border:1px dashed #b45309;border-radius:10px;padding:10px;user-select:all">${c}</div><div class="text-xs text-gray-300 mt-2">Save this code now - it will not be shown again.</div><button type="button" id="cp-dl" class="mt-2 px-3 py-1.5 bg-gray-700 text-white rounded-lg text-xs font-bold">Download .txt</button>`;
-                    b.querySelector('#cp-dl').onclick = () => download('UPSC_PYQ_Recovery_Code.txt', 'UPSC PYQ Analytics - password recovery code\n\n' + c + '\n\nKeep this file private.');
-                };
-            } });
-    };
-})();
-</script>
+<script>try{localStorage.removeItem('app_pw_v1');sessionStorage.removeItem('app_unlocked');}catch(e){}</script>
 
 </body>
 </html>
