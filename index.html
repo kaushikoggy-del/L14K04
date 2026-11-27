@@ -181,7 +181,7 @@
         .dock-title { font-weight: 700; font-size: 13px; margin: 6px 0 8px; }
         @media (min-width: 1024px) {
             #pyq-split.split-on { display: flex; gap: 20px; align-items: flex-start; }
-            #pyq-split.split-on #pyq-list-container { width: 380px; flex: none; }
+            #pyq-split.split-on #pyq-list-container { width: calc(50% - 10px); flex: none; }
             #pyq-split.split-on #pyq-list-container .grid { grid-template-columns: minmax(0, 1fr) !important; }
             #pyq-split.split-on #pyq-list-container [id^="analysis-"], #pyq-split.split-on #pyq-list-container [id^="expl-panel-"] { display: none !important; }
             #pyq-split.split-on #detail-dock { flex: 1; min-width: 0; position: sticky; top: 112px; max-height: calc(100vh - 128px); overflow-y: auto; }
