@@ -4315,7 +4315,10 @@ function confirmSubmitCbt() {
     const skip = new Set(), priority = [], failCount = {};
     const isPaused = () => { try { return localStorage.getItem('expl_paused') === '1'; } catch (e) { return false; } };
     // An explanation is UNVERIFIED when it was written without web search (Groq / OpenRouter, or Gemini without search) and has not been checked by Gemini yet.
-    const isUnverified = e => !!e && !e.verified && !e.edited && e.grounded === false;
+    // Unverified rule: everything written BEFORE the cutoff (no web search) stays Unverified. From the cutoff on, only explanations written by Groq / OpenRouter count as Unverified.
+    const UNV_RULE_FROM = 1795830378128;
+    const isAltWriter = e => /groq|openrouter|^or$/i.test(String(e.provider || '')) || (!e.provider && !!e.model && !/gemini/i.test(String(e.model)));
+    const isUnverified = e => !!e && !e.verified && !e.edited && e.grounded === false && (!(e.ts >= UNV_RULE_FROM) || isAltWriter(e));
     window.explIsUnverified = isUnverified;
     const altOff = () => { try { return localStorage.getItem('alt_fallback_off') !== '0'; } catch (e) { return true; } };   // Groq/OpenRouter fallback is OFF unless you switch it ON
     const strictOn = () => { try { return localStorage.getItem('expl_strict') !== '0'; } catch (e) { return true; } };         // strict = explanations are written ONLY with Gemini web search
