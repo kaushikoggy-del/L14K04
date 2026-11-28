@@ -6342,9 +6342,9 @@ Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"abstract","hook"
         if (!todo.length) return;
         const BATCH = 8, batches = []; for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
         const catalog = subs.map((s, i) => `${i + 1}. ${s.name} (${s.nature}): ${s.topics.join(' | ')}`).join('\n');
-        ui.tagging = true; ui.stop = false; let done = 0, fail = 0, tries = new Map(); refresh();
-        const upd = () => { ui.progress = `Tagged ${done} / ${todo.length}${fail ? ' - failed ' + fail : ''}${ui.stop ? ' - stopping...' : ''}`; if (ui.tab === 'analysis' && ui.paper === p) refresh(); };
-        const queue = batches.slice();
+        ui.tagging = true; ui.stop = false; ui.note = ''; let done = 0, fail = 0, tries = new Map(); refresh();
+        const upd = () => { ui.progress = `Tagged ${done} / ${todo.length}${fail ? ' - failed ' + fail : ''}${ui.stop ? ' - stopping...' : ui.note ? ' - ' + ui.note : ''}`; if (ui.tab === 'analysis' && ui.paper === p) refresh(); };
+        const queue = batches.slice(); upd();
         const worker = async () => {
             while (queue.length && !ui.stop) {
                 const bt = queue.shift();
@@ -6375,11 +6375,17 @@ Reply ONLY with a JSON array: [{"n":1,"subject":"","topic":"","dimension":"","ty
                         recs.push({ ...q, tag: { subject: sb ? sb.name : String(r.subject || '').trim(), topic, dimension: String(r.dimension || '').trim(), qtype: qt, directive: String(r.directive || '').trim().toLowerCase(), by: 'ai', ts: Date.now() } });
                     });
                     if (!recs.length) throw new Error('Empty tag list');
-                    await api().put(recs); done += recs.length; upd();
+                    await api().put(recs); done += recs.length; ui.note = ''; upd();
                 } catch (e) {
-                    const n = (tries.get(bt) || 0) + 1; tries.set(bt, n);
-                    if (n < 4 && !ui.stop) { queue.push(bt); if (e.kind === 'quota' || e.kind === 'busy') await sleep(Math.min(e.retryMs || 15000, 60000)); else await sleep(3000); }
-                    else { fail += bt.length; upd(); console.warn('[mains tag]', e.message); }
+                    const limit = e.kind === 'quota' || e.kind === 'busy';
+                    const n = (tries.get(bt) || 0) + (limit ? 0 : 1); tries.set(bt, n);   // waiting for a resting key is not a failure
+                    if (n < 4 && !ui.stop) {
+                        queue.push(bt);
+                        const w = limit ? Math.max(10000, Math.min(e.retryMs || 15000, 60000)) : 3000;
+                        ui.note = limit ? `waiting - all keys are resting after their limit (next one in about ${Math.ceil(w / 1000)} s). Other writers (explanations / verify) use the same keys` : 'retrying (' + errText(e).slice(0, 90) + ')';
+                        upd(); await sleep(w);
+                    }
+                    else { fail += bt.length; ui.note = errText(e).slice(0, 110); upd(); console.warn('[mains tag]', e.message); }
                 }
             }
         };
