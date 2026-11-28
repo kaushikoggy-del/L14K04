@@ -5834,6 +5834,9 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
                 <div class="flex gap-2"><button type="button" data-mact="add" class="px-3 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-plus"></i> Add question</button>
                 <button type="button" data-mact="discard" class="px-3 py-2 bg-red-950/60 hover:bg-red-900/80 border border-red-500/40 text-red-200 rounded-lg text-xs font-bold">Discard</button>
                 <button type="button" data-mact="save" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow"><i class="fa-solid fa-floppy-disk"></i> Save ${pending.length} to Mains database</button></div></div>
+            <div class="flex flex-wrap items-center gap-3 text-xs text-gray-400">Wrong paper or year? Change it here before saving:
+                <label class="flex items-center gap-1">Paper <select data-mmeta="paper" class="bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100">${PAPERS.map(([k, n]) => `<option value="${k}" ${m.paper === k ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+                <label class="flex items-center gap-1">Year <input data-mmeta="year" type="number" value="${esc(m.year)}" class="w-24 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label></div>
             ${gapWarn}${willReplace ? `<div class="text-xs text-sky-300">${willReplace} of these already exist for ${m.year} ${esc(m.paper)} and will be replaced by the new text.</div>` : ''}${warn}
             <div class="space-y-3 max-h-[560px] overflow-y-auto pr-2">${pending.map((q, i) => `<div class="bg-black/30 border border-gray-700/70 rounded-xl p-3 space-y-2">
                 <div class="flex flex-wrap items-center gap-2 text-xs">
@@ -5848,6 +5851,12 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         const t = e.target; if (!t.dataset || t.dataset.mi === undefined || !t.dataset.mf || !t.closest('#mains-preview')) return;
         const q = pending[Number(t.dataset.mi)]; if (!q) return; const f = t.dataset.mf;
         q[f] = (f === 'marks' || f === 'words') ? num(t.value) : t.value;
+    });
+    document.addEventListener('change', e => {
+        const t = e.target; if (!t.dataset || !t.dataset.mmeta || !t.closest('#mains-preview') || !pendingMeta) return;
+        if (t.dataset.mmeta === 'paper') pendingMeta.paper = t.value;
+        else { const y = parseInt(t.value, 10); if (!(y >= 1990 && y <= 2035)) { showPopup({ title: 'Check the year', type: 'warn', html: '<div>Enter a year between 1990 and 2035.</div>' }); renderPreview(); return; } pendingMeta.year = y; }
+        renderPreview();
     });
     document.addEventListener('click', async e => {
         const b = e.target.closest('#mains-preview [data-mact]'); if (!b) return;
@@ -5899,6 +5908,11 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
             <button type="button" data-mv="export" class="text-sky-300 hover:underline"><i class="fa-solid fa-download"></i> Export</button>
             <button type="button" data-mv="import" class="text-sky-300 hover:underline"><i class="fa-solid fa-file-import"></i> Import</button>
             <input type="file" id="mains-import-file" accept="application/json,.json" class="hidden"></span></div>`;
+        if (view.year !== 'ALL' && view.paper !== 'ALL' && list.length) {
+            h += `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300 bg-card p-3 rounded-xl border border-amber-500/30">Put in the wrong paper? Move all <b class="text-amber-300">${list.length}</b> questions of ${esc(view.year)} ${esc(view.paper)} to
+                <select id="mains-move-to" class="${sel}">${PAPERS.filter(([k]) => k !== view.paper).map(([k, n]) => `<option value="${k}">${esc(n)}</option>`).join('')}</select>
+                <button type="button" data-mv="moveall" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-bold">Move</button></div>`;
+        }
         if (!db.length) {
             h += `<div class="bg-card p-8 rounded-xl border border-gray-700/60 text-center space-y-3"><div class="text-sm text-gray-200">No Mains questions saved yet.</div><div class="text-xs text-gray-400">Upload a Mains question paper from Import &amp; AI Tagger, choosing the Mains (descriptive) option.</div>
                 <button type="button" data-mv="upload" class="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-cloud-arrow-up"></i> Upload Mains PYQ</button></div>`;
@@ -5948,6 +5962,20 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
             const q = db.find(x => x.id === id); if (!q) return;
             showPopup({ title: 'Delete this question?', type: 'warn', html: `<div>${esc(q.year)} ${esc(q.paper)} Q${esc(q.qNo)}: ${esc(q.question.slice(0, 140))}${q.question.length > 140 ? '...' : ''}</div><div class="flex gap-2"><button type="button" id="md-yes" class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold">Delete</button><button type="button" id="md-no" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
                 onOpen: (box, close) => { box.querySelector('#md-no').onclick = close; box.querySelector('#md-yes').onclick = async () => { try { await delOne(id); db = db.filter(x => x.id !== id); } catch (err) { showPopup({ title: 'Could not delete', type: 'error', html: `<div>${esc(err.message)}</div>` }); } close(); refresh(); }; } });
+        }
+        else if (a === 'moveall') {
+            const sel = document.getElementById('mains-move-to'), to = sel && sel.value, from = view.paper, yr = Number(view.year);
+            const src = db.filter(q => q.year === yr && q.paper === from);
+            if (!to || to === from || !src.length) return;
+            const moved = src.map(q => ({ ...q, id: mkId(q.year, to, q.qNo), paper: to, ts: Date.now() }));
+            const clash = moved.filter(r => db.some(d => d.id === r.id));
+            if (clash.length) { showPopup({ title: 'Cannot move yet', type: 'warn', html: `<div>${yr} ${esc(to)} already has ${clash.length} question(s) with the same number (Q${clash.slice(0, 8).map(r => esc(r.qNo)).join(', Q')}${clash.length > 8 ? '...' : ''}). Nothing was changed. Delete or move those first, then try again.</div>` }); return; }
+            showPopup({ title: 'Move these questions?', type: 'warn', html: `<div>Move all ${src.length} questions of ${yr} ${esc(from)} to ${esc(to)}?</div><div class="flex gap-2"><button type="button" id="mm-yes" class="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs font-bold">Move</button><button type="button" id="mm-no" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
+                onOpen: (box, close) => { box.querySelector('#mm-no').onclick = close; box.querySelector('#mm-yes').onclick = async () => {
+                    try { await putMany(moved); await Promise.all(src.map(q => delOne(q.id))); }   // new copies are saved first, so nothing is lost if a step fails
+                    catch (err) { close(); showPopup({ title: 'Could not move', type: 'error', html: `<div>${esc(err.message)}</div>` }); refresh(); return; }
+                    const gone = new Set(src.map(q => q.id)); db = db.filter(d => !gone.has(d.id)).concat(moved); view.paper = to; close(); refresh();
+                }; } });
         }
         else if (a === 'export') {
             const blob = new Blob([JSON.stringify(sortQs(db), null, 2)], { type: 'application/json' }), l = document.createElement('a');
