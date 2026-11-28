@@ -5636,11 +5636,11 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         return { doc, pages };
     }
     function chunkText(t, size) { const out = []; let cur = ''; for (const l of String(t).split('\n')) { if (cur.length + l.length > size && cur) { out.push(cur); cur = ''; } cur += l + '\n'; } if (cur.trim()) out.push(cur); return out.map(x => ({ scanned: false, text: x.trim() })); }
-    async function geminiExtract(year, paper, raw, file) {
+    async function geminiExtract(year, paper, raw, file, expected) {
         const pk = providerKeys();
         if (!pk.gem.length && !pk.groq.length && !pk.or.length) throw new Error('No API key saved. Add one in Settings (the three-dot menu, API Key Vault).');
         const label = (PAPERS.find(p => p[0] === paper) || [paper, paper])[1];
-        const prompt = (batched) => `You are extracting questions from a UPSC Civil Services MAINS ${paper === 'ESSAY' ? 'Essay' : 'General Studies'} question paper (${year}, ${label}).
+        const prompt = (batched, only) => `You are extracting questions from a UPSC Civil Services MAINS ${paper === 'ESSAY' ? 'Essay' : 'General Studies'} question paper (${year}, ${label}).
 Return ONLY a JSON array, nothing else. One element per question:
 {"qNo": "1", "question": "full question text", "marks": 10, "words": 150}
 Rules:
@@ -5650,7 +5650,8 @@ Rules:
 - GS4 case studies are questions too; keep the whole case-study text in question.
 ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with several essay topics (usually 4 each). Every essay topic is its own element. Use qNo like "A1", "A2", "B1", "B2" (section letter + topic number). The topic is usually a short quote or statement; keep it exactly as printed. marks is usually 125 and words 1000-1200 if printed, otherwise null.' : ''}
 - The paper may be BILINGUAL: if a question appears in English and again in Hindi (Devanagari), extract ONLY the English version. Ignore all Hindi text completely. Never translate, never include any Hindi word, and return each question only once.
-- Ignore instructions, headers, footers, page numbers and section titles.${batched ? '\n- You are given only some pages of the paper. Text marked CONTEXT is only there to complete a question that is cut at a page edge; do not return a question that lies completely inside a CONTEXT part. If the pages contain no question (only instructions), return [].' : ''}`;
+- Question labels are often printed like "Q7.": qNo is then just "7" (no Q, no dot). On scanned pages the marks are the bare number at the right edge of the question (e.g. 10 or 15).
+- Ignore instructions, headers, footers, page numbers and section titles.${only ? `\n- IMPORTANT: return ONLY the question(s) numbered ${only.join(', ')}. Skip every other question. If they are not on these pages, return [].` : ''}${batched ? '\n- You are given only some pages of the paper. Text marked CONTEXT is only there to complete a question that is cut at a page edge; do not return a question that lies completely inside a CONTEXT part. If the pages contain no question (only instructions), return [].' : ''}`;
         const isPdf = f => f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
         let pages = null, doc = null;
         if (file && isPdf(file) && window.pdfjsLib) { mainsStatus('Reading PDF text...'); try { ({ doc, pages } = await pdfPages(file)); } catch (e) { pages = null; } }
@@ -5670,33 +5671,47 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
                 mainsStatus('Reading the file...');
                 return await callBatch([{ text: prompt(false) }, { inlineData: { mimeType: file.type || 'application/pdf', data: await toB64(file) } }], 'Whole file', false);
             }
-            const results = new Array(batches.length), failed = []; let next = 0, done = 0; const t0 = Date.now();
-            const build = async b => {
+            const failed = [], merged = new Map(), keyCount = pk.gem.length + pk.groq.length + pk.or.length;
+            const build = async (b, only) => {
                 const f = b.nums[0], l = b.nums[b.nums.length - 1];
                 if (b.type === 'text') {
                     const prev = f > 1 ? pages[f - 2].text.slice(-600) : '', nxt = l < pages.length ? pages[l].text.slice(0, 600) : '', body = b.nums.map(n => pages[n - 1].text).join('\n\n');
                     const txt = [prev ? '[CONTEXT - END OF PREVIOUS PAGE]:\n' + prev : '', `[MAIN PAGES ${f}-${l}]:\n${body}`, nxt ? '[CONTEXT - START OF NEXT PAGE]:\n' + nxt : ''].filter(Boolean).join('\n\n');
-                    return { parts: [{ text: prompt(batches.length > 1) }, { text: txt }], expect: body.length > 400 && /words|marks|discuss|examine|critically|explain|comment|analy[sz]e|essay/i.test(body) };
+                    return { parts: [{ text: prompt(batches.length > 1 || !!only, only) }, { text: txt }], expect: !only && body.length > 400 && /words|marks|discuss|examine|critically|explain|comment|analy[sz]e|essay/i.test(body) };
                 }
-                const parts = [{ text: prompt(batches.length > 1) }];
+                const parts = [{ text: prompt(batches.length > 1 || !!only, only) }];
                 for (const n of b.nums) { const pg = await doc.getPage(n), vp = pg.getViewport({ scale: 1.6 }), cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height; const cx = cv.getContext('2d'); cx.filter = 'grayscale(100%) contrast(130%)'; await pg.render({ canvasContext: cx, viewport: vp }).promise; parts.push({ inlineData: { mimeType: 'image/jpeg', data: cv.toDataURL('image/jpeg', 0.8).split(',')[1] } }); }
                 return { parts, expect: false };
             };
-            const worker = async () => {
-                for (;;) {
-                    const i = next++; if (i >= batches.length) return; const b = batches[i], lab = `Batch ${i + 1}/${batches.length} (P.${b.nums[0]}${b.nums.length > 1 ? '-' + b.nums[b.nums.length - 1] : ''})`;
-                    try { const { parts, expect } = await build(b); results[i] = await callBatch(parts, lab, expect); }
-                    catch (e) { failed.push(`${lab}: ${e.message}`); results[i] = []; }
-                    done++; if (done < batches.length) mainsStatus(`${done}/${batches.length} batches done, about ${Math.round((Date.now() - t0) / 1000 / done * (batches.length - done))}s left`);
+            // one pass over all batches (in parallel); `only` = question numbers to look for in a recovery pass
+            const runPass = async (only, tag) => {
+                const results = new Array(batches.length); let next = 0, done = 0; const t0 = Date.now();
+                const worker = async () => {
+                    for (;;) {
+                        const i = next++; if (i >= batches.length) return; const b = batches[i], lab = `${tag}Batch ${i + 1}/${batches.length} (P.${b.nums[0]}${b.nums.length > 1 ? '-' + b.nums[b.nums.length - 1] : ''})`;
+                        try { const { parts, expect } = await build(b, only); results[i] = await callBatch(parts, lab, expect); }
+                        catch (e) { failed.push(`${lab}: ${e.message}`); results[i] = []; }
+                        done++; if (done < batches.length) mainsStatus(`${tag}${done}/${batches.length} batches done, about ${Math.round((Date.now() - t0) / 1000 / done * (batches.length - done))}s left`);
+                    }
+                };
+                await Promise.all(Array.from({ length: Math.min(batches.length, Math.max(2, Math.min(keyCount, 5))) }, worker));
+                for (const q of [].concat(...results)) {   // same qNo from overlapping batches -> keep the longer text
+                    if (!q || !q.question) continue; const clean = String(q.qNo).trim().replace(/^q\.?\s*/i, '').replace(/[.):\s]+$/, ''), k = clean.toLowerCase(), o = merged.get(k);
+                    if (!o || String(q.question).length > String(o.question).length) merged.set(k, { ...(o || {}), ...q, qNo: clean }); else if (o && o.marks == null && q.marks != null) { o.marks = q.marks; o.words = q.words; }
                 }
             };
-            const keyCount = pk.gem.length + pk.groq.length + pk.or.length;
-            await Promise.all(Array.from({ length: Math.min(batches.length, Math.max(2, Math.min(keyCount, 5))) }, worker));
-            const merged = new Map();   // same qNo from overlapping batches -> keep the longer text
-            for (const q of [].concat(...results)) { if (!q || !q.question) continue; const k = String(q.qNo).trim().toLowerCase(), o = merged.get(k); if (!o || String(q.question).length > String(o.question).length) merged.set(k, { ...(o || {}), ...q }); else if (o && o.marks == null && q.marks != null) { o.marks = q.marks; o.words = q.words; } }
+            // question numbers that should exist but were not found (gaps inside 1..max, and up to the "questions in paper" number if typed)
+            const missingNos = () => {
+                if (paper === 'ESSAY') return [];
+                const nums = new Set([...merged.values()].map(q => parseInt(String(q.qNo), 10)).filter(n => n > 0)); if (!nums.size) return [];
+                const top = Math.min(60, Math.max(expected || 0, ...nums)), m = []; for (let n = 1; n <= top; n++) if (!nums.has(n)) m.push(n); return m;
+            };
+            await runPass(null, '');
+            if (!merged.size && failed.length) throw new Error(failed[0]);
+            const miss = missingNos();
+            if (merged.size && miss.length && miss.length <= 12) { mainsStatus('Looking again for missing Q' + miss.join(', Q')); await runPass(miss, 'Recheck: '); }
             const arr = [...merged.values()];
-            if (!arr.length && failed.length) throw new Error(failed[0]);
-            arr.failed = failed; return arr;
+            arr.failed = failed; arr.missing = missingNos(); return arr;
         } finally { clearInterval(tick); exStart = 0; }
     }
     // basic offline reader for pasted text (used only if Gemini fails)
@@ -5725,7 +5740,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
             const rawQ = String(it && (it.question || it.text) || ''); if (hindiShare(rawQ) > 0.4) return;   // a Hindi question: skip
             const question = noHindi(rawQ);
             if (question.length < 10) return;
-            let qNo = String(it.qNo ?? it.number ?? (i + 1)).trim().replace(/^q\.?\s*/i, '') || String(i + 1);
+            let qNo = String(it.qNo ?? it.number ?? (i + 1)).trim().replace(/^q\.?\s*/i, '').replace(/[.):\s]+$/, '') || String(i + 1);
             let k = qNo, n = 2; while (seen.has(k.toLowerCase())) { k = qNo + '_' + n++; } seen.add(k.toLowerCase());
             out.push({ qNo: k, question, marks: num(it.marks), words: num(it.words) });
         });
@@ -5738,7 +5753,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
         if (!raw && !mainsFile) { showPopup({ title: 'Nothing to read', type: 'warn', html: '<div>Upload the question paper (PDF or image) or paste its text first.</div>' }); return; }
         const btn = document.getElementById('btn-mains-extract'); btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Reading the paper...';
         let arr = null;
-        try { arr = await geminiExtract(year, paper, raw, mainsFile); }
+        try { arr = await geminiExtract(year, paper, raw, mainsFile, expected); }
         catch (e) {
             if (raw) { arr = ruleParse(raw); showPopup({ title: 'Gemini could not finish', type: 'warn', html: `<div><b>What happened:</b> ${esc(e.message)}</div><div>The site used its basic reader on the pasted text instead, so please check every question and its marks carefully.</div>` }); }
             else showPopup({ title: 'Could not read the paper', type: 'error', html: `<div><b>What happened:</b> ${esc(e.message)}</div><div><b>What to do:</b> Try again in a minute, upload a clearer file, or paste the text instead.</div>` });
@@ -5746,7 +5761,8 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
         btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-microchip"></i> Extract Mains Questions';
         if (!arr) return;
         pending = normalize(arr); pendingMeta = { year, paper, expected };
-        const failedB = arr.failed || [];
+        const failedB = arr.failed || [], missingB = arr.missing || [];
+        pendingMeta.missing = missingB;
         if (!pending.length) { showPopup({ title: 'No questions found', type: 'error', html: '<div>No question could be found in what you gave. Check that the file or text is a Mains question paper.</div>' }); renderPreview(); return; }
         renderPreview();
         if (failedB.length) showPopup({ title: 'Some pages could not be read', type: 'warn', html: `<div>${failedB.length} part(s) of the paper failed after trying all keys and models, so some questions may be missing:</div><div class="text-xs text-gray-400">${failedB.map(esc).join('<br>')}</div><div>Check the list below and use Extract again, or add the missing question by hand.</div>` });
@@ -5758,13 +5774,14 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
         if (!pending.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
         const m = pendingMeta, willReplace = pending.filter(q => db.some(d => d.id === mkId(m.year, m.paper, q.qNo))).length;
         const warn = m.expected && m.expected !== pending.length ? `<div class="rounded-lg border border-amber-500/40 bg-amber-900/10 px-3 py-2 text-xs text-amber-200">You said this paper has ${m.expected} questions but ${pending.length} were found. Check below whether something was missed (you can add a question by hand).</div>` : '';
+        const gaps = (m.missing || []).filter(n => !pending.some(q => parseInt(q.qNo, 10) === n)), gapWarn = gaps.length ? `<div class="rounded-lg border border-rose-500/40 bg-rose-900/10 px-3 py-2 text-xs text-rose-200">Not found even after a second look: <b>Q${gaps.join(', Q')}</b>. Check your paper and add them by hand.</div>` : '';
         box.classList.remove('hidden');
         box.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
                 <h3 class="text-sm font-bold text-violet-400 flex items-center gap-2"><i class="fa-solid fa-list-check"></i> Check before saving: ${pending.length} questions &middot; ${m.year} &middot; ${esc(m.paper)}</h3>
                 <div class="flex gap-2"><button type="button" data-mact="add" class="px-3 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-plus"></i> Add question</button>
                 <button type="button" data-mact="discard" class="px-3 py-2 bg-red-950/60 hover:bg-red-900/80 border border-red-500/40 text-red-200 rounded-lg text-xs font-bold">Discard</button>
                 <button type="button" data-mact="save" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow"><i class="fa-solid fa-floppy-disk"></i> Save ${pending.length} to Mains database</button></div></div>
-            ${willReplace ? `<div class="text-xs text-sky-300">${willReplace} of these already exist for ${m.year} ${esc(m.paper)} and will be replaced by the new text.</div>` : ''}${warn}
+            ${gapWarn}${willReplace ? `<div class="text-xs text-sky-300">${willReplace} of these already exist for ${m.year} ${esc(m.paper)} and will be replaced by the new text.</div>` : ''}${warn}
             <div class="space-y-3 max-h-[560px] overflow-y-auto pr-2">${pending.map((q, i) => `<div class="bg-black/30 border border-gray-700/70 rounded-xl p-3 space-y-2">
                 <div class="flex flex-wrap items-center gap-2 text-xs">
                     <label class="flex items-center gap-1 text-gray-400">Q <input data-mi="${i}" data-mf="qNo" value="${esc(q.qNo)}" class="w-16 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label>
