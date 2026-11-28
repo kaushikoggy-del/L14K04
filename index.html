@@ -187,6 +187,19 @@
             #pyq-split.split-on #detail-dock { flex: 1; min-width: 0; position: sticky; top: 112px; max-height: calc(100vh - 128px); overflow-y: auto; }
         }
     </style>
+    <style id="ca-css">
+        /* CURRENT AFFAIRS: list on the left, issue brief on the right (full-screen overlay on small screens) */
+        #ca-root .ca-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }
+        #ca-root .ca-detail { display: none; }
+        #ca-root .ca-detail.open { display: block; position: fixed; inset: 0; z-index: 60; background: #0b0f19; overflow-y: auto; padding: 16px; }
+        @media (min-width: 1024px) {
+            #ca-root .ca-grid { grid-template-columns: 42% minmax(0, 1fr); align-items: start; }
+            #ca-root .ca-detail, #ca-root .ca-detail.open { display: block; position: sticky; top: 108px; inset: auto; z-index: auto; background: transparent; padding: 0; max-height: calc(100vh - 124px); overflow-y: auto; }
+            #ca-root .ca-close { display: none; }
+        }
+        #ca-root .ca-sel { border-color: #38bdf8 !important; box-shadow: 0 0 0 1px #38bdf8 !important; }
+        #ca-root .ca-sec { border-left: 3px solid rgba(56,189,248,.55); padding-left: 12px; }
+    </style>
     <style id="dark-grey-override">
   /* 1. Fix Windows Chrome Dropdown <option> readability */
   select, select option {
@@ -277,6 +290,9 @@
                     </button>
                     <button onclick="switchTab('cbt')" id="nav-cbt" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-teal-300 hover:text-white">
                         <i class="fa-solid fa-stopwatch"></i> Test Series (CBT)
+                    </button>
+                    <button onclick="switchTab('ca')" id="nav-ca" class="px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-sky-300 hover:text-white">
+                        <i class="fa-solid fa-newspaper"></i> Current Affairs
                     </button>
                 </nav>
 
@@ -768,6 +784,7 @@
             </div>
         </section>
         <!-- ==================== ISOLATED TEST SERIES (CBT) MODULE ==================== -->
+<section id="tab-ca" class="hidden space-y-4 font-sans"><div id="ca-root"></div></section>
 <section id="tab-insights" class="hidden space-y-4 font-sans"><div id="insights-root" class="space-y-4"></div></section>
 <section id="tab-cbt" class="hidden space-y-6">
     <!-- 1. Test Series Lobby & Isolated Importer -->
@@ -1323,7 +1340,7 @@
 
         // TAB NAVIGATION
         function switchTab(tabId) {
-            ['explorer', 'import', 'notes', 'insights', 'cbt'].forEach(t => {
+            ['explorer', 'import', 'notes', 'insights', 'cbt', 'ca'].forEach(t => {
                 document.getElementById(`tab-${t}`).classList.add('hidden');
                 document.getElementById(`nav-${t}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition text-gray-400 hover:text-white';
             });
@@ -1331,6 +1348,7 @@
             document.getElementById(`nav-${tabId}`).className = 'px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-2 transition bg-gray-800 text-amber-400 border border-amber-500/30';
             if (tabId === 'cbt' && typeof renderCbtLobby === 'function') renderCbtLobby();
             if (tabId === 'insights' && typeof renderInsights === 'function') renderInsights();
+            if (tabId === 'ca' && window.caRender) window.caRender();
         }
 
         // 3-DOTS MENU & MODALS
@@ -4574,7 +4592,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         const body = { contents: [{ role: 'user', parts: [{ text: (opts && opts.prompt) || buildPrompt(q) }] }], generationConfig: { temperature: 0.3, maxOutputTokens: (opts && opts.maxTokens) || 4096 } };
         if (useSearch) body.tools = [{ google_search: {} }];
         let r;
-        try { r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, 70000); }
+        try { r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, (opts && opts.timeoutMs) || 70000); }
         catch (e) { throw new ExplErr(e.name === 'AbortError' ? 'Timed out' : 'Network: ' + e.message, 'net'); }
         let d = {}; try { d = await r.json(); } catch (e) {}
         if (!r.ok) {
@@ -4588,7 +4606,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         if (!text) throw new ExplErr('Empty reply (' + ((c && c.finishReason) || 'no candidates') + ')', 'empty');
         const seen = new Set(), sources = [];
         ((c.groundingMetadata && c.groundingMetadata.groundingChunks) || []).forEach(g => { if (g.web && g.web.uri && !seen.has(g.web.uri)) { seen.add(g.web.uri); sources.push({ uri: g.web.uri, title: g.web.title || '' }); } });
-        return { text, sources: sources.slice(0, 6), grounded: useSearch };
+        return { text, sources: sources.slice(0, (opts && opts.maxSources) || 6), grounded: useSearch };
     }
     const keyCool = {}, keyQFails = {};
     const modelOk = {};   // per key: the model that last worked (tried first next time)
@@ -6629,6 +6647,374 @@ Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"static","hook":"
 
     // wait for the Mains viewer to be ready, then wrap it
     let tries = 0; const iv = setInterval(() => { if (install() || ++tries > 100) clearInterval(iv); }, 100);
+})();
+</script>
+
+<script>
+// ===== CURRENT AFFAIRS: GS > Subject > Topic filters, month-wise issues from June 2026, subject-specific briefs, PYQ links =====
+(function () {
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const START = '2026-06';
+    const MN = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+    const GS_LIST = ['GS1', 'GS2', 'GS3', 'GS4'];
+    const GS_NAME = { GS1: 'GS1 - History, Geography & Society', GS2: 'GS2 - Polity, Governance, Social Justice & IR', GS3: 'GS3 - Economy, Technology, Environment & Security', GS4: 'GS4 - Ethics, Integrity & Aptitude' };
+    const pad = n => String(n).padStart(2, '0');
+    const norm = x => String(x || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const hash = s => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0; return h.toString(36); };
+    const pop = o => (window.showPopup || (() => {}))(o);
+
+    // ---------- sources: only PIB, Government websites, The Hindu, The Indian Express ----------
+    const okSource = s => {
+        const t = (String((s && s.title) || '') + ' ' + String((s && s.uri) || '')).toLowerCase();
+        return /(^|[\s.\/])(pib\.gov\.in|gov\.in|nic\.in|sansad\.in|rbi\.org\.in|thehindu\.com|indianexpress\.com)(?=$|[\s\/:?#])/.test(t) || /press information bureau|(^|\s)pib(\s|$)|the hindu|indian express/.test(t);
+    };
+    const domainOf = s => { const t = String((s && s.title) || ''); return /\./.test(t) && !/\s/.test(t.trim()) ? t.trim() : (/hindu/i.test(t) ? 'The Hindu' : /express/i.test(t) ? 'Indian Express' : /pib|press information/i.test(t) ? 'PIB' : (t || 'source')); };
+
+    // ---------- syllabus: GS > Subject > Topic (the Mains Syllabus the user already has; GS4 default below) ----------
+    const DEFAULT_TAX = {
+        GS1: [{ name: 'Art & Culture', topics: ['Art forms', 'Literature', 'Architecture'] }, { name: 'Modern History', topics: ['Freedom struggle', 'Post-1857 India'] }, { name: 'Indian Society', topics: ['Diversity', 'Women', 'Urbanisation', 'Globalisation'] }, { name: 'Geography', topics: ['Physical geography', 'Resources', 'Climate'] }],
+        GS2: [{ name: 'Indian Polity & Constitution', topics: ['Judiciary', 'Parliament & legislatures', 'Federalism', 'Elections', 'Constitutional bodies'] }, { name: 'Governance', topics: ['Transparency & accountability', 'E-governance', 'Civil services'] }, { name: 'Social Justice', topics: ['Health', 'Education', 'Poverty & hunger', 'Vulnerable sections'] }, { name: 'International Relations', topics: ['Neighbourhood', 'Groupings', 'Bilateral relations'] }],
+        GS3: [{ name: 'Indian Economy & Infrastructure', topics: ['Growth & development', 'Banking & finance', 'Budget & taxation', 'Infrastructure'] }, { name: 'Agriculture', topics: ['MSP & procurement', 'Subsidies', 'Food security'] }, { name: 'Science & Technology', topics: ['Space', 'AI & IT', 'Biotechnology'] }, { name: 'Environment & Disaster Management', topics: ['Climate change', 'Conservation', 'Disaster management'] }, { name: 'Internal Security', topics: ['Terrorism', 'Border management', 'Cyber security'] }],
+        GS4: [{ name: 'Ethics & Human Interface', topics: ['Ethics in public life', 'Values & dimensions of ethics', 'Role of family, society, education'] }, { name: 'Attitude & Aptitude', topics: ['Attitude & persuasion', 'Emotional intelligence', 'Aptitude for civil service'] }, { name: 'Probity in Governance', topics: ['Corruption', 'Citizen charters', 'Ethical governance', 'Conflict of interest'] }, { name: 'Thinkers & Case Studies', topics: ['Moral thinkers', 'Case studies'] }]
+    };
+    function taxonomy() {
+        let syl = {}; try { syl = JSON.parse(localStorage.getItem('mains_syllabus_v1')) || {}; } catch (e) {}
+        const out = {};
+        GS_LIST.forEach(g => { const subs = ((syl[g] && syl[g].subjects) || []).filter(x => x && x.name); out[g] = subs.length ? subs.map(x => ({ name: x.name, topics: (x.topics || []).filter(Boolean) })) : DEFAULT_TAX[g]; });
+        return out;
+    }
+
+    // ---------- what a good answer needs, subject by subject ----------
+    const TK = [
+        [/polity|constitution/i, [['provisions', 'Constitutional provisions', 'Articles, Schedules, amendments and Acts that apply (only the relevant ones)'], ['judgements', 'Landmark judgements', 'Supreme Court / High Court judgements that matter here, with the principle each laid down'], ['committees', 'Committees & commissions', 'recommendations of 2nd ARC, Law Commission, Sarkaria, Punchhi, NCRWC (Venkatachaliah), parliamentary standing committees, whichever apply'], ['comparative', 'Comparative practice', 'one or two examples of how other democracies handle it']]],
+        [/governance/i, [['laws', 'Laws, rules & schemes', 'the Acts, rules and schemes involved'], ['institutions', 'Institutions & e-governance', 'bodies, portals, tools'], ['committees', 'Committees & 2nd ARC', 'recommendations of 2nd ARC and other committees that apply'], ['data', 'Data & indices', 'e.g. Ease of Living, PGI, Good Governance Index'], ['practices', 'Best practices', 'state-level or other-country examples']]],
+        [/social justice/i, [['provisions', 'Constitutional & legal provisions', 'Articles, Acts'], ['schemes', 'Schemes', 'name, outlay, coverage'], ['data', 'Data', 'NFHS, PLFS, MPI, SDG India Index, Census - with year'], ['committees', 'Committees & judgements', 'those that apply'], ['groups', 'Vulnerable-group lens', 'who is affected and how']]],
+        [/international relations/i, [['agreements', 'Treaties, agreements & groupings', 'the instruments involved'], ['stand', "India's stand & strategic interests", 'what India wants and why'], ['data', 'Key data', 'trade, investment, diaspora, defence numbers - with year'], ['precedents', 'Past similar episodes', 'earlier comparable events'], ['options', "India's options & leverage", 'diplomatic choices']]],
+        [/economy|infrastructure/i, [['data', 'Key data', 'latest numbers with year from Economic Survey, Union Budget, RBI, NSO, NITI Aayog'], ['framework', 'Policy & regulatory framework', 'schemes, laws, regulators'], ['committees', 'Committee reports', 'expert committee / task force reports that apply'], ['comparison', 'International comparison', 'indices, peer countries']]],
+        [/agricultur/i, [['data', 'Data', 'MSP, production, procurement, stocks - with year'], ['schemes', 'Schemes & policies', 'name and purpose'], ['committees', 'Committees', 'e.g. Swaminathan, Shanta Kumar, Dalwai - whichever apply'], ['impact', 'Farmer-level impact & constraints', 'who gains, who loses']]],
+        [/science|technolog/i, [['concept', 'The concept in simple words', 'two or three lines'], ['programmes', "India's missions, agencies & programmes", 'names and what they do'], ['applications', 'Applications vs risks', 'benefits and concerns'], ['regulation', 'Ethical, legal & regulatory aspects', 'rules, gaps']]],
+        [/environment|disaster/i, [['concept', 'Concept & data', 'latest numbers with year'], ['conventions', "International conventions & India's commitments", 'e.g. NDCs, CBD, Ramsar'], ['laws', 'Laws & institutions', 'NGT, CPCB, Forest Rights Act, Disaster Management Act etc.'], ['judgements', 'Judgements', 'those that apply'], ['reports', 'Reports & indices', 'e.g. EPI, IPCC, Global Risk reports']]],
+        [/security/i, [['threat', 'Threat landscape & data', 'official data (MHA, NCRB) with year'], ['laws', 'Laws & agencies', 'UAPA, NIA, AFSPA etc. - whichever apply'], ['committees', 'Committees & reports', 'those that apply'], ['external', 'External linkage', 'cross-border dimension']]],
+        [/society/i, [['legal', 'Constitutional & legal angle', 'Articles, Acts'], ['data', 'Data', 'Census, NFHS, PLFS - with year'], ['concepts', 'Sociological concepts & thinkers', 'to enrich the answer'], ['policy', 'Policy responses', 'schemes and laws']]],
+        [/geograph/i, [['explanation', 'Geographical explanation', 'causes and processes'], ['data', 'Data, places & maps', 'locations, numbers'], ['cases', 'Case examples', 'India and the world']]],
+        [/history|culture|art|independence/i, [['background', 'Historical background', 'period, people, sources'], ['significance', 'Significance & legacy', 'why it matters'], ['facts', 'Key facts for revision', 'dates, places, people']]],
+        [/ethic|integrity|aptitude|probity|thinker/i, [['dimensions', 'Ethical dimensions & stakeholders', 'values in conflict'], ['concepts', 'Concepts, thinkers & short quotes', 'to use in the answer'], ['case', 'Case-study angle', 'the dilemma and the options'], ['lessons', 'Lessons for public administration', 'what a civil servant should learn']]]
+    ];
+    const DEFAULT_TK = [['data', 'Key data', 'numbers with year'], ['framework', 'Laws, schemes & institutions', 'those that apply'], ['committees', 'Committees, judgements & reports', 'those that apply']];
+    const toolkitFor = name => { const f = TK.find(t => t[0].test(name || '')); return (f ? f[1] : DEFAULT_TK).map(([k, t, h]) => ({ k, t, h })); };
+
+    // ---------- storage (IndexedDB) ----------
+    let issues = [], meta = {}, idb = null, loaded = false;
+    const openDb = () => new Promise((res, rej) => { const r = indexedDB.open('ca_v1', 1); r.onupgradeneeded = () => { r.result.createObjectStore('issues', { keyPath: 'id' }); r.result.createObjectStore('meta', { keyPath: 'key' }); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    const getAll = st => new Promise((res, rej) => { const rq = idb.transaction(st).objectStore(st).getAll(); rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error); });
+    const putMany = (st, list) => new Promise((res, rej) => {
+        if (!idb) return rej(new Error('Browser storage is not available in this mode (private window?).'));
+        const tx = idb.transaction(st, 'readwrite'), o = tx.objectStore(st); list.forEach(x => o.put(x)); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error('Save cancelled'));
+    });
+    const delOne = (st, id) => new Promise((res, rej) => { if (!idb) return rej(new Error('Browser storage is not available.')); const tx = idb.transaction(st, 'readwrite'); tx.objectStore(st).delete(id); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
+    async function load() {
+        try { idb = await openDb(); issues = await getAll('issues'); (await getAll('meta')).forEach(m => { meta[m.key] = m; }); }
+        catch (e) { idb = null; issues = []; console.warn('[ca] storage unavailable', e); }
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+        loaded = true; render();
+    }
+
+    // ---------- state ----------
+    const ui = { gs: 'GS2', subject: 'ALL', topic: 'ALL', month: 'ALL', kind: 'ALL', newest: false, q: '', sel: null, overlay: false, scanMonth: 'ALL', scan: { running: false, stop: false, msg: '', done: 0, total: 0 }, building: {}, err: {} };
+    try { const v = JSON.parse(localStorage.getItem('ca_ui_v1')); if (v) ['gs', 'subject', 'topic', 'month', 'kind', 'newest'].forEach(k => { if (v[k] !== undefined) ui[k] = v[k]; }); } catch (e) {}
+    const saveUi = () => { try { localStorage.setItem('ca_ui_v1', JSON.stringify({ gs: ui.gs, subject: ui.subject, topic: ui.topic, month: ui.month, kind: ui.kind, newest: ui.newest })); } catch (e) {} };
+    const monthList = () => { const out = []; let [y, m] = START.split('-').map(Number); const n = new Date(), ey = n.getFullYear(), em = n.getMonth() + 1; while (y < ey || (y === ey && m <= em)) { out.push(`${y}-${pad(m)}`); m++; if (m > 12) { m = 1; y++; } } return out; };
+    const mLabel = k => { const [y, m] = k.split('-'); return MN[Number(m) - 1] + ' ' + y; };
+    const mShort = k => { const [y, m] = k.split('-'); return MN[Number(m) - 1].slice(0, 3) + ' ' + y; };
+    const dShort = d => { const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})/); return m ? `${Number(m[3])} ${MN[Number(m[2]) - 1].slice(0, 3)}` : ''; };
+
+    // ---------- AI (Gemini with Google Search; same engine and keys as the explanation writer) ----------
+    const errText = e => { try { return window.explainError ? (window.explainError(e.message || String(e)).why || e.message) : (e.message || String(e)); } catch (_) { return e.message || String(e); } };
+    function ask(prompt, maxTokens) {
+        if (!window.aiGenerate) return Promise.reject(new Error('The AI engine is not ready. Reload the page.'));
+        return window.aiGenerate({ id: 'ca_tool', exam: 'CA', year: '' }, { prompt, requireSearch: true, geminiOnly: true, maxTokens: maxTokens || 8192, maxSources: 14, timeoutMs: 110000 });
+    }
+    function jsonFrom(text, open, close) {
+        const t = String(text || '').replace(/```json\s*/gi, '').replace(/```/g, '');
+        const a = t.indexOf(open), b = t.lastIndexOf(close);
+        if (a < 0 || b <= a) throw new Error('The AI did not return the expected format. Try again.');
+        return JSON.parse(t.slice(a, b + 1).replace(/,\s*([\]}])/g, '$1'));
+    }
+    const strs = (x, n) => (Array.isArray(x) ? x : (x ? [x] : [])).map(v => typeof v === 'string' ? v : (v && (v.point || v.text) ? String(v.point || v.text) : '')).map(v => v.trim()).filter(Boolean).slice(0, n || 6);
+    const SRC_RULE = 'Use Google Search. Use ONLY information found in PIB (pib.gov.in), other Government of India websites (.gov.in, .nic.in), The Hindu and The Indian Express. Ignore every other source. If something is not covered by these sources, leave it out. Never invent anything.';
+
+    function scanPrompt(gs, sub, topics, month) {
+        const [y, m] = month.split('-').map(Number), now = new Date();
+        const last = (now.getFullYear() === y && now.getMonth() + 1 === m) ? now.getDate() : new Date(y, m, 0).getDate();
+        return `You are a UPSC Civil Services current affairs analyst (Mains-focused). Today is ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.
+Task: find the MAJOR developments between ${y}-${pad(m)}-01 and ${y}-${pad(m)}-${pad(last)} in the subject "${sub}" (${GS_NAME[gs]}) that UPSC could ask about.
+${SRC_RULE}
+Pick only issues that are widely discussed, relevant to the syllabus topics below, and likely to give an analytical or application-based Mains question. Skip routine news, party politics without policy content, and minor events. Return 3 to 8 issues (fewer is fine; return [] if nothing important).
+Syllabus topics of this subject: ${topics.join('; ')}
+Return ONLY a JSON array. Each element:
+{"title": "short issue title, max 12 words", "date": "YYYY-MM-DD main date of the development", "topic": "exactly one topic from the list above", "summary": "1-2 lines: what happened", "whyUpsc": "one line: the Mains angle", "prelims": true or false (true ONLY if a direct fact-based MCQ is realistic), "pyqKeywords": ["3 to 5 specific keywords or phrases (Act names, Article numbers, scheme or institution names) to find related past questions"]}`;
+    }
+    function briefPrompt(it) {
+        const tk = toolkitFor(it.subject);
+        return `You are a UPSC Mains answer-writing mentor. Build a compact brief on this current affairs issue so an aspirant can write a high-scoring answer.
+Issue: ${it.title}
+${it.gs} > ${it.subject} > ${it.topic}. Date: ${it.date}. Summary: ${it.summary}
+${SRC_RULE} Do not invent facts, figures, Article numbers, judgement names or committee names; if unsure, leave it out. Put the year with every number. End each bullet that states a fact with its source type in brackets: [PIB], [Govt site], [The Hindu] or [Indian Express].
+Be PRACTICAL and SHORT: it must be revisable in 3 minutes. At most 5 bullets in each list, each bullet at most 25 words.
+Return ONLY this JSON object:
+{
+ "facts": ["what happened: who, what, when, key numbers"],
+ "background": "2-3 lines of context",
+ "sections": {
+${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
+ },
+ "debate": {"supporters": ["arguments in favour"], "critics": ["arguments against or concerns"]},
+ "wayForward": [{"point": "a concrete reform or action", "basis": "the committee / commission / judgement / report / 2nd ARC / international practice behind it, or empty"}],
+ "valueAddition": ["data, index ranks, terms, examples, case studies or a short quote that make an answer stand out"],
+ "answerHook": "one line: in what kind of question and how to use this issue",
+ "likelyQuestions": ["1 or 2 probable Mains questions in UPSC style"],
+ "prelims": {"relevant": true or false, "facts": ["only the few facts an MCQ could test; empty if not relevant"]},
+ "pyqKeywords": ["3 to 6 specific keywords"]
+}`;
+    }
+
+    // ---------- scanning a subject month by month ----------
+    const scanKey = (gs, sub, mo) => `scan:${gs}:${sub}:${mo}`;
+    function matchTopic(topics, t) { const n = norm(t); if (!n) return ''; return topics.find(x => norm(x) === n) || topics.find(x => norm(x).includes(n) || n.includes(norm(x))) || ''; }
+    async function scanMonth(gs, sub, mo) {
+        const subj = (taxonomy()[gs] || []).find(x => x.name === sub), topics = subj && subj.topics.length ? subj.topics : [sub];
+        const out = await ask(scanPrompt(gs, sub, topics, mo), 6000);
+        const arr = jsonFrom(out.text, '[', ']'); if (!Array.isArray(arr)) throw new Error('The AI did not return a list. Try again.');
+        const verified = out.sources.some(okSource), fresh = [];
+        arr.forEach(x => {
+            const title = String((x && x.title) || '').trim(); if (title.length < 6) return;
+            const id = 'ca_' + hash(norm(gs + '|' + sub + '|' + title));
+            if (issues.some(i => i.id === id) || fresh.some(i => i.id === id)) return;
+            let date = String(x.date || ''); if (!new RegExp('^' + mo + '-\\d{2}').test(date)) date = mo + '-15';
+            fresh.push({ id, gs, subject: sub, topic: matchTopic(topics, x.topic) || topics[0], month: mo, date, title, summary: String(x.summary || '').trim(), whyUpsc: String(x.whyUpsc || '').trim(), prelims: x.prelims === true, pyqKeys: strs(x.pyqKeywords, 6), verified, createdTs: Date.now(), brief: null });
+        });
+        if (fresh.length) await putMany('issues', fresh);
+        fresh.forEach(f => issues.push(f));
+        const m = { key: scanKey(gs, sub, mo), ts: Date.now(), n: fresh.length, verified }; await putMany('meta', [m]); meta[m.key] = m;
+        return fresh.length;
+    }
+    async function runScan() {
+        if (ui.scan.running) return;
+        if (ui.subject === 'ALL') { pop({ title: 'Pick a subject first', type: 'warn', html: '<div>Choose a GS paper and a subject in the filters, then press Scan. The scan reads one subject at a time so the results stay accurate.</div>' }); return; }
+        const gs = ui.gs, sub = ui.subject, months = ui.scanMonth === 'ALL' ? monthList() : [ui.scanMonth];
+        ui.scan = { running: true, stop: false, msg: 'Starting...', done: 0, total: months.length }; render();
+        let added = 0, stoppedFor = '';
+        for (const mo of months) {
+            if (ui.scan.stop) break;
+            ui.scan.msg = `Reading ${mLabel(mo)} news for ${sub}...`; render();
+            try { added += await scanMonth(gs, sub, mo); ui.scan.done++; }
+            catch (e) { stoppedFor = errText(e); break; }
+        }
+        const done = ui.scan.done, total = ui.scan.total;
+        ui.scan = { running: false, stop: false, msg: stoppedFor ? `Stopped after ${done} of ${total} months: ${stoppedFor}` : `Done. ${added} new issues found in ${done} month(s).`, done, total };
+        if (stoppedFor) pop({ title: 'Scan stopped', type: 'warn', html: `<div>${esc(stoppedFor)}</div><div class="text-xs text-gray-400">Months already scanned are saved. Press Scan again later to continue with the remaining months.</div>` });
+        render();
+    }
+
+    // ---------- brief for one issue ----------
+    async function buildBrief(id) {
+        const it = issues.find(x => x.id === id); if (!it || ui.building[id]) return;
+        ui.building[id] = true; ui.err[id] = ''; render();
+        try {
+            const out = await ask(briefPrompt(it), 8192);
+            const b = jsonFrom(out.text, '{', '}'), tk = toolkitFor(it.subject), sec = {};
+            tk.forEach(t => { const v = strs(b.sections && b.sections[t.k], 6).filter(x => x.toLowerCase().indexOf(t.t.toLowerCase() + ': ' + t.h.toLowerCase()) !== 0); if (v.length) sec[t.k] = v; });
+            it.brief = {
+                facts: strs(b.facts, 6), background: String(b.background || '').trim(), sections: sec,
+                supporters: strs(b.debate && b.debate.supporters, 5), critics: strs(b.debate && b.debate.critics, 5),
+                wayForward: (Array.isArray(b.wayForward) ? b.wayForward : []).map(w => ({ point: String((w && (w.point || w.text)) || (typeof w === 'string' ? w : '')).trim(), basis: String((w && w.basis) || '').trim() })).filter(w => w.point).slice(0, 6),
+                valueAddition: strs(b.valueAddition, 6), answerHook: String(b.answerHook || '').trim(), likelyQuestions: strs(b.likelyQuestions, 3),
+                prelimsRelevant: !!(b.prelims && b.prelims.relevant), prelimsFacts: strs(b.prelims && b.prelims.facts, 5)
+            };
+            if (!it.brief.facts.length && !it.brief.wayForward.length) throw new Error('The AI returned an empty brief. Try again.');
+            const k = strs(b.pyqKeywords, 6); if (k.length) it.pyqKeys = Array.from(new Set([...k, ...(it.pyqKeys || [])])).slice(0, 8);
+            it.prelims = it.prelims || it.brief.prelimsRelevant;
+            const allowed = out.sources.filter(okSource);
+            it.sources = allowed.map(s => ({ title: s.title, uri: s.uri })); it.sourcesDropped = out.sources.length - allowed.length;
+            it.verified = allowed.length > 0; it.briefTs = Date.now(); delete it._pyq;
+            await putMany('issues', [it]);
+        } catch (e) { ui.err[id] = errText(e); }
+        ui.building[id] = false; render();
+    }
+
+    // ---------- links to past questions ----------
+    // 'Judiciary - structure, organization and functioning' -> ['judiciary'];  'Significant provisions and Basic Structure' -> ['significant provisions', 'basic structure']
+    const topicKeys = t => Array.from(new Set(String(t || '').split(/\s+-\s+|:/)[0].split(/,|\band\b/i).map(norm).filter(k => k.length >= 6)));
+    function pyqFor(it) {
+        if (it._pyq && it._pyq.k === (it.pyqKeys || []).join('|')) return it._pyq;
+        const direct = (it.pyqKeys || []).map(norm).filter(k => k.length >= 4);
+        const has = (txt, keys) => keys.some(k => (' ' + txt + ' ').includes(' ' + k + ' '));
+        const P = typeof pyqDatabase !== 'undefined' ? pyqDatabase : [], M = window.mainsApi ? window.mainsApi.all() : [];
+        const pT = new Map(P.map(q => [q, norm((q.question || '') + ' ' + (q.options || []).join(' '))])), mT = new Map(M.map(q => [q, norm(q.question)]));
+        const pd = P.filter(q => has(pT.get(q), direct)), md = M.filter(q => has(mT.get(q), direct));
+        const pdSet = new Set(pd), mdSet = new Set(md), tk = topicKeys(it.topic);
+        const r = { k: (it.pyqKeys || []).join('|'), pd, md, pt: tk.length ? P.filter(q => !pdSet.has(q) && has(pT.get(q), tk)) : [], mt: tk.length ? M.filter(q => !mdSet.has(q) && has(mT.get(q), tk)) : [] };
+        it._pyq = r; return r;
+    }
+    function showPyq(id, kind) {
+        const it = issues.find(x => x.id === id); if (!it) return; const r = pyqFor(it);
+        const L = ['A', 'B', 'C', 'D'];
+        const pRow = q => `<div class="border border-gray-700/60 rounded-lg p-3 space-y-1"><div class="text-[11px] text-sky-300 font-sans">${esc(q.exam)} ${esc(q.year)}${q.theme ? ' &middot; ' + esc(q.theme) : ''}</div><div class="text-sm text-gray-100 font-pyq-text">${esc(q.question)}</div><div class="text-xs text-gray-400 font-pyq-text">${(q.options || []).map((o, i) => `<span class="${(q.officialKey && L[i] === q.officialKey) || o === q.correctAnswer ? 'text-emerald-300 font-bold' : ''}">(${L[i].toLowerCase()}) ${esc(o)}</span>`).join(' &nbsp; ')}</div></div>`;
+        const mRow = q => `<div class="border border-gray-700/60 rounded-lg p-3 space-y-1"><div class="text-[11px] text-violet-300 font-sans">${esc(q.year)} ${esc(q.paper)} Q${esc(q.qNo)}${q.marks ? ' &middot; ' + esc(q.marks) + ' marks' : ''}${q.words ? ' &middot; ' + esc(q.words) + ' words' : ''}</div><div class="text-sm text-gray-100 font-pyq-text whitespace-pre-line">${esc(q.question)}</div></div>`;
+        const byYear = (a, b) => (b.year - a.year) || String(a.qNo || '').localeCompare(String(b.qNo || ''));
+        const part = (title, list, row) => list.length ? `<div class="text-xs font-bold text-gray-300 mt-2">${title} (${list.length})</div>${list.slice().sort(byYear).slice(0, 40).map(row).join('')}${list.length > 40 ? `<div class="text-xs text-gray-500">Showing the latest 40.</div>` : ''}` : '';
+        const isP = kind === 'prelims', d = isP ? r.pd : r.md, t = isP ? r.pt : r.mt, row = isP ? pRow : mRow;
+        const body = part('On this issue (matched by its keywords: ' + esc((it.pyqKeys || []).join(', ')) + ')', d, row) + part('On the same topic (' + esc(it.topic) + ')', t, row) || '';
+        pop({ title: `${isP ? 'Prelims' : 'Mains'} questions: ${it.title.slice(0, 60)}`, type: 'info', html: `<div class="space-y-2 max-h-[60vh] overflow-y-auto pr-1">${body || '<div class="text-sm text-gray-400">No past question found for these keywords.</div>'}</div><div class="text-[11px] text-gray-500">Matching is by keywords, so check each question for relevance.</div>` });
+    }
+
+    // ---------- rendering ----------
+    const sel = 'bg-black/30 border border-gray-600 rounded-lg px-2 py-1 text-xs text-gray-200';
+    function filtered() {
+        const q = norm(ui.q);
+        let l = issues.filter(i => i.gs === ui.gs && (ui.subject === 'ALL' || i.subject === ui.subject) && (ui.topic === 'ALL' || i.topic === ui.topic) && (ui.month === 'ALL' || i.month === ui.month) && (ui.kind === 'ALL' || i.prelims || (i.brief && i.brief.prelimsRelevant)) && (!q || norm(i.title + ' ' + i.summary + ' ' + i.topic).includes(q)));
+        l.sort((a, b) => String(a.date).localeCompare(String(b.date)) * (ui.newest ? -1 : 1));
+        return l;
+    }
+    function card(i) {
+        const bt = i.brief ? '<span class="text-emerald-400" title="Brief ready"><i class="fa-solid fa-circle-check"></i></span>' : '';
+        return `<button type="button" data-ca="open" data-id="${esc(i.id)}" class="w-full text-left bg-card p-3 rounded-xl border border-gray-700/60 hover:border-sky-500/60 transition space-y-1 ${ui.sel === i.id ? 'ca-sel' : ''}">
+            <div class="flex items-start gap-2"><span class="text-[11px] text-gray-400 flex-none pt-0.5">${esc(dShort(i.date))}</span><span class="text-sm font-semibold text-gray-100 flex-1">${esc(i.title)}</span>${bt}</div>
+            <div class="text-xs text-gray-400">${esc(i.summary)}</div>
+            <div class="flex flex-wrap gap-1.5 text-[10px]"><span class="px-1.5 py-0.5 rounded border border-sky-500/30 bg-sky-500/10 text-sky-300">${esc(i.topic)}</span>${i.prelims ? '<span class="px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">Prelims-likely</span>' : ''}${i.verified === false ? '<span class="px-1.5 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-rose-300">No allowed source</span>' : ''}</div></button>`;
+    }
+    const bullets = l => `<ul class="list-disc pl-5 space-y-1 text-sm text-gray-200">${l.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
+    const sect = (title, inner, cls) => inner ? `<div class="ca-sec space-y-1 ${cls || ''}"><div class="text-xs font-bold uppercase tracking-wide text-sky-300 font-sans">${title}</div>${inner}</div>` : '';
+    function detail(it) {
+        if (!it) return '<div class="text-xs text-gray-500 p-4">Pick an issue on the left to see its brief.</div>';
+        const b = it.brief, id = esc(it.id), r = pyqFor(it), busy = ui.building[it.id];
+        const chip = (t, c) => `<span class="px-2 py-0.5 rounded border ${c}">${t}</span>`;
+        let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-4">
+            <div class="flex items-start justify-between gap-3"><div class="space-y-1"><div class="flex flex-wrap gap-1.5 text-[11px] font-sans">${chip(esc(it.gs), 'border-gray-600 text-gray-300')}${chip(esc(it.subject), 'border-gray-600 text-gray-300')}${chip(esc(it.topic), 'border-sky-500/30 bg-sky-500/10 text-sky-300')}${chip(esc(dShort(it.date)) + ' ' + esc(it.month.slice(0, 4)), 'border-gray-600 text-gray-400')}</div>
+                <div class="text-base font-bold text-gray-100">${esc(it.title)}</div></div>
+                <button type="button" data-ca="close" class="ca-close text-gray-400 hover:text-white px-2" title="Close"><i class="fa-solid fa-xmark"></i></button></div>
+            <div class="text-sm text-gray-300">${esc(it.summary)}</div>
+            ${it.whyUpsc ? `<div class="text-xs text-violet-300"><i class="fa-solid fa-bullseye"></i> UPSC angle: ${esc(it.whyUpsc)}</div>` : ''}
+            <div class="flex flex-wrap gap-2 text-xs font-sans">
+                <button type="button" data-ca="pyq" data-kind="prelims" data-id="${id}" class="px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20">Prelims PYQs: <b>${r.pd.length}</b> on this issue &middot; ${r.pt.length} on topic</button>
+                <button type="button" data-ca="pyq" data-kind="mains" data-id="${id}" class="px-3 py-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20">Mains PYQs: <b>${r.md.length}</b> on this issue &middot; ${r.mt.length} on topic</button>
+                ${r.pd.length ? '<span class="px-2 py-1.5 rounded-lg border border-amber-500/40 text-amber-300">Asked in Prelims before</span>' : ''}${(it.prelims || (b && b.prelimsRelevant)) ? '<span class="px-2 py-1.5 rounded-lg border border-amber-500/40 text-amber-300">Prelims-likely</span>' : ''}</div>`;
+        if (busy) h += '<div class="text-sm text-sky-300"><i class="fa-solid fa-spinner fa-spin"></i> Reading PIB, government sites, The Hindu and The Indian Express and building the brief... (about a minute)</div>';
+        else if (ui.err[it.id]) h += `<div class="rounded-lg border border-rose-500/40 bg-rose-900/10 p-3 text-xs text-rose-200 space-y-2"><div>${esc(ui.err[it.id])}</div><button type="button" data-ca="build" data-id="${id}" class="px-3 py-1.5 bg-sky-600 text-white rounded-lg font-bold">Try again</button></div>`;
+        else if (!b) h += `<button type="button" data-ca="build" data-id="${id}" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-wand-magic-sparkles"></i> Build brief</button>`;
+        else {
+            const tk = toolkitFor(it.subject);
+            h += (it.verified ? '<div class="text-[11px] text-emerald-400"><i class="fa-solid fa-circle-check"></i> Built from allowed sources only (PIB / government sites / The Hindu / The Indian Express).</div>' : '<div class="rounded-lg border border-rose-500/40 bg-rose-900/10 p-2 text-[11px] text-rose-200"><i class="fa-solid fa-triangle-exclamation"></i> No PIB / government / The Hindu / Indian Express source was found for this brief. Treat it as unverified and check before using.</div>');
+            h += sect('What happened', bullets(b.facts));
+            h += sect('Background', b.background ? `<div class="text-sm text-gray-200">${esc(b.background)}</div>` : '');
+            tk.forEach(t => { if (b.sections[t.k] && b.sections[t.k].length) h += sect(esc(t.t), bullets(b.sections[t.k])); });
+            if (b.supporters.length || b.critics.length) h += sect('Ongoing debate', `<div class="grid sm:grid-cols-2 gap-3"><div><div class="text-[11px] font-bold text-emerald-300 mb-1">In favour</div>${bullets(b.supporters)}</div><div><div class="text-[11px] font-bold text-rose-300 mb-1">Concerns</div>${bullets(b.critics)}</div></div>`);
+            if (b.wayForward.length) h += sect('Way forward', `<ul class="space-y-1.5 text-sm text-gray-200">${b.wayForward.map(w => `<li><i class="fa-solid fa-arrow-right text-sky-400 text-[10px]"></i> ${esc(w.point)}${w.basis ? ` <span class="text-[11px] px-1.5 py-0.5 rounded border border-gray-600 text-gray-400">${esc(w.basis)}</span>` : ''}</li>`).join('')}</ul>`);
+            if (b.valueAddition.length) h += `<div class="rounded-lg border border-emerald-500/40 bg-emerald-900/10 p-3 space-y-1"><div class="text-xs font-bold uppercase tracking-wide text-emerald-300 font-sans"><i class="fa-solid fa-gem"></i> Value addition</div>${bullets(b.valueAddition)}</div>`;
+            if (b.answerHook) h += `<div class="rounded-lg border border-violet-500/40 bg-violet-900/10 p-3 text-sm text-violet-100"><b class="text-violet-300 text-xs uppercase tracking-wide font-sans">How to use it:</b> ${esc(b.answerHook)}</div>`;
+            if (b.likelyQuestions.length) h += sect('Likely questions', bullets(b.likelyQuestions));
+            if (b.prelimsRelevant && b.prelimsFacts.length) h += `<div class="rounded-lg border border-amber-500/40 bg-amber-900/10 p-3 space-y-1"><div class="text-xs font-bold uppercase tracking-wide text-amber-300 font-sans">For Prelims</div>${bullets(b.prelimsFacts)}</div>`;
+            h += `<div class="text-xs text-gray-400 space-y-1"><div class="font-bold text-gray-300 font-sans">Sources</div>${(it.sources || []).length ? (it.sources || []).map(s => `<div><a href="${esc(s.uri)}" target="_blank" rel="noopener" class="text-sky-300 hover:underline">${esc(domainOf(s))}</a></div>`).join('') : '<div>None from the allowed list.</div>'}${it.sourcesDropped ? `<div class="text-gray-500">${it.sourcesDropped} other link(s) were ignored because they are not from the allowed sources.</div>` : ''}</div>`;
+            h += `<div class="flex flex-wrap gap-4 text-xs font-sans pt-1"><button type="button" data-ca="build" data-id="${id}" class="text-sky-300 hover:underline"><i class="fa-solid fa-rotate"></i> Rebuild</button><button type="button" data-ca="copy" data-id="${id}" class="text-sky-300 hover:underline"><i class="fa-regular fa-copy"></i> Copy notes</button></div>`;
+        }
+        h += `<div class="text-xs font-sans"><button type="button" data-ca="delete" data-id="${id}" class="text-red-300 hover:underline">Delete this issue</button></div></div>`;
+        return h;
+    }
+    function render() {
+        const el = document.getElementById('ca-root'); if (!el) return;
+        if (!loaded) { el.innerHTML = '<div class="text-xs text-gray-400 p-4">Loading Current Affairs...</div>'; return; }
+        const tax = taxonomy(), subs = tax[ui.gs] || [];
+        if (ui.subject !== 'ALL' && !subs.some(s => s.name === ui.subject)) { ui.subject = 'ALL'; ui.topic = 'ALL'; }
+        const subj = subs.find(s => s.name === ui.subject), topics = subj ? subj.topics : [];
+        if (ui.topic !== 'ALL' && !topics.includes(ui.topic)) ui.topic = 'ALL';
+        const months = monthList(), base = issues.filter(i => i.gs === ui.gs && (ui.subject === 'ALL' || i.subject === ui.subject) && (ui.topic === 'ALL' || i.topic === ui.topic));
+        const list = filtered(), bySel = issues.find(i => i.id === ui.sel);
+        const scanned = m => ui.subject !== 'ALL' && meta[scanKey(ui.gs, ui.subject, m)];
+        let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-bold text-sky-300 flex items-center gap-2"><i class="fa-solid fa-newspaper"></i> Current Affairs <span class="text-[11px] font-normal text-gray-500">from June 2026</span></div>
+                <div class="text-[11px] text-gray-500">Sources: PIB, Government websites, The Hindu, The Indian Express only. Issue-based, built for Mains; Prelims-likely items are flagged.</div></div>
+                <div class="flex gap-3 text-xs"><button type="button" data-ca="export" class="text-sky-300 hover:underline"><i class="fa-solid fa-download"></i> Export</button><button type="button" data-ca="import" class="text-sky-300 hover:underline"><i class="fa-solid fa-file-import"></i> Import</button><input type="file" id="ca-import-file" accept="application/json,.json" class="hidden"></div></div>
+            <div class="flex flex-wrap items-center gap-2 text-xs text-gray-300">
+                <select id="ca-gs" class="${sel}">${GS_LIST.map(g => `<option value="${g}" ${ui.gs === g ? 'selected' : ''}>${esc(GS_NAME[g])}</option>`).join('')}</select>
+                <select id="ca-sub" class="${sel}"><option value="ALL">All subjects</option>${subs.map(s => `<option value="${esc(s.name)}" ${ui.subject === s.name ? 'selected' : ''}>${esc(s.name)}</option>`).join('')}</select>
+                <select id="ca-topic" class="${sel}" ${ui.subject === 'ALL' ? 'disabled' : ''}><option value="ALL">All topics</option>${topics.map(t => `<option value="${esc(t)}" ${ui.topic === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+                <select id="ca-kind" class="${sel}"><option value="ALL">Mains + Prelims</option><option value="P" ${ui.kind === 'P' ? 'selected' : ''}>Prelims-likely only</option></select>
+                <input id="ca-q" value="${esc(ui.q)}" placeholder="Search issues..." class="${sel} w-44">
+                <button type="button" data-ca="order" class="text-sky-300 hover:underline">${ui.newest ? 'Newest first' : 'Oldest first'}</button></div>
+            <div class="flex flex-wrap gap-1.5 text-[11px]"><button type="button" data-ca="month" data-m="ALL" class="px-2.5 py-1 rounded-lg border ${ui.month === 'ALL' ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}">All months (${base.length})</button>${months.map(m => `<button type="button" data-ca="month" data-m="${m}" class="px-2.5 py-1 rounded-lg border ${ui.month === m ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}">${esc(mShort(m))} (${base.filter(i => i.month === m).length})${scanned(m) ? ' &#10003;' : ''}</button>`).join('')}</div>
+            <div class="flex flex-wrap items-center gap-2 text-xs border-t border-gray-700/60 pt-3"><span class="text-gray-400">Find news for ${ui.subject === 'ALL' ? '<i>(pick a subject)</i>' : '<b class="text-gray-200">' + esc(ui.subject) + '</b>'}:</span>
+                <select id="ca-scanmonth" class="${sel}"><option value="ALL">All months since June 2026</option>${months.map(m => `<option value="${m}" ${ui.scanMonth === m ? 'selected' : ''}>${esc(mLabel(m))}</option>`).join('')}</select>
+                ${ui.scan.running ? `<button type="button" data-ca="stop" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>` : `<button type="button" data-ca="scan" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold"><i class="fa-solid fa-magnifying-glass"></i> Scan news</button>`}
+                <span class="text-gray-400">${esc(ui.scan.msg)}${ui.scan.running ? ` (${ui.scan.done}/${ui.scan.total})` : ''}</span></div></div>`;
+        h += `<div class="ca-grid"><div class="space-y-3">`;
+        if (!list.length) h += `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-400 text-center space-y-1"><div>No issues here yet.</div><div>${ui.subject === 'ALL' ? 'Pick a subject, then press <b>Scan news</b>.' : 'Press <b>Scan news</b> to find this subject\'s major developments from June 2026.'}</div></div>`;
+        else {
+            const groups = {}; list.forEach(i => { (groups[i.month] = groups[i.month] || []).push(i); });
+            Object.keys(groups).sort((a, b) => a.localeCompare(b) * (ui.newest ? -1 : 1)).forEach(m => { h += `<div class="text-xs font-bold text-gray-300 pt-1">${esc(mLabel(m))} <span class="text-gray-500 font-normal">(${groups[m].length})</span></div>${groups[m].map(card).join('')}`; });
+        }
+        h += `</div><div class="ca-detail ${ui.overlay ? 'open' : ''}" id="ca-detail">${detail(bySel)}</div></div>`;
+        const keepQ = document.activeElement && document.activeElement.id === 'ca-q', pos = keepQ ? document.activeElement.selectionStart : 0;
+        el.innerHTML = h;
+        if (keepQ) { const q = document.getElementById('ca-q'); q.focus(); try { q.setSelectionRange(pos, pos); } catch (e) {} }
+        el.onchange = e => {
+            const t = e.target.id;
+            if (t === 'ca-gs') { ui.gs = e.target.value; ui.subject = 'ALL'; ui.topic = 'ALL'; ui.sel = null; }
+            else if (t === 'ca-sub') { ui.subject = e.target.value; ui.topic = 'ALL'; }
+            else if (t === 'ca-topic') ui.topic = e.target.value;
+            else if (t === 'ca-kind') ui.kind = e.target.value;
+            else if (t === 'ca-scanmonth') { ui.scanMonth = e.target.value; return; }
+            else if (t === 'ca-import-file') { importFile(e.target.files[0]); return; }
+            else return;
+            saveUi(); render();
+        };
+        el.oninput = e => { if (e.target.id === 'ca-q') { ui.q = e.target.value; render(); } };
+        el.onclick = onClick;
+    }
+    async function onClick(e) {
+        const b = e.target.closest('[data-ca]'); if (!b) return;
+        const a = b.dataset.ca, id = b.dataset.id;
+        if (a === 'open') { ui.sel = id; ui.overlay = true; render(); const it = issues.find(x => x.id === id); if (it && !it.brief && !ui.building[id] && !ui.err[id]) buildBrief(id); }
+        else if (a === 'close') { ui.overlay = false; render(); }
+        else if (a === 'month') { ui.month = b.dataset.m; saveUi(); render(); }
+        else if (a === 'order') { ui.newest = !ui.newest; saveUi(); render(); }
+        else if (a === 'scan') runScan();
+        else if (a === 'stop') { ui.scan.stop = true; ui.scan.msg = 'Stopping after this month...'; render(); }
+        else if (a === 'build') { const it = issues.find(x => x.id === id); if (it) { ui.err[id] = ''; buildBrief(id); } }
+        else if (a === 'pyq') showPyq(id, b.dataset.kind);
+        else if (a === 'copy') copyNotes(id);
+        else if (a === 'delete') {
+            const it = issues.find(x => x.id === id); if (!it) return;
+            pop({ title: 'Delete this issue?', type: 'warn', html: `<div>${esc(it.title)}</div><div class="flex gap-2"><button type="button" id="ca-yes" class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold">Delete</button><button type="button" id="ca-no" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
+                onOpen: (box, close) => { box.querySelector('#ca-no').onclick = close; box.querySelector('#ca-yes').onclick = async () => { try { await delOne('issues', id); issues = issues.filter(x => x.id !== id); if (ui.sel === id) { ui.sel = null; ui.overlay = false; } } catch (err) { pop({ title: 'Could not delete', type: 'error', html: `<div>${esc(err.message)}</div>` }); } close(); render(); }; } });
+        }
+        else if (a === 'export') {
+            const blob = new Blob([JSON.stringify({ issues: issues.map(i => { const c = { ...i }; delete c._pyq; return c; }), meta: Object.values(meta) }, null, 2)], { type: 'application/json' }), l = document.createElement('a');
+            l.href = URL.createObjectURL(blob); l.download = `UPSC_Current_Affairs_Backup_${new Date().toISOString().slice(0, 10)}.json`; document.body.appendChild(l); l.click(); l.remove();
+        }
+        else if (a === 'import') { const f = document.getElementById('ca-import-file'); if (f) f.click(); }
+    }
+    async function importFile(file) {
+        if (!file) return;
+        try {
+            const d = JSON.parse(await file.text()), arr = Array.isArray(d) ? d : d.issues;
+            if (!Array.isArray(arr)) throw new Error('This file is not a Current Affairs backup.');
+            const ok = arr.filter(i => i && i.id && i.gs && i.subject && i.title && i.month); if (!ok.length) throw new Error('No valid issues found in the file.');
+            await putMany('issues', ok); ok.forEach(r => { const k = issues.findIndex(x => x.id === r.id); if (k >= 0) issues[k] = r; else issues.push(r); });
+            if (Array.isArray(d.meta)) { await putMany('meta', d.meta); d.meta.forEach(m => { meta[m.key] = m; }); }
+            pop({ title: 'Imported', type: 'ok', html: `<div>${ok.length} issues imported. Total: <b>${issues.length}</b>.</div>` });
+        } catch (e) { pop({ title: 'Could not import', type: 'error', html: `<div>${esc(e.message)}</div>` }); }
+        render();
+    }
+    function copyNotes(id) {
+        const it = issues.find(x => x.id === id); if (!it || !it.brief) return; const b = it.brief, tk = toolkitFor(it.subject), L = (t, l) => l && l.length ? `\n${t}\n${l.map(x => '- ' + x).join('\n')}\n` : '';
+        let t = `# ${it.title}\n${it.gs} > ${it.subject} > ${it.topic} | ${it.date}\n\n${it.summary}\n` + L('## What happened', b.facts) + (b.background ? `\n## Background\n${b.background}\n` : '');
+        tk.forEach(x => { t += L('## ' + x.t, b.sections[x.k]); });
+        t += L('## In favour', b.supporters) + L('## Concerns', b.critics) + L('## Way forward', b.wayForward.map(w => w.point + (w.basis ? ' [' + w.basis + ']' : ''))) + L('## Value addition', b.valueAddition) + (b.answerHook ? `\n## How to use it\n${b.answerHook}\n` : '') + L('## Likely questions', b.likelyQuestions) + L('## Sources', (it.sources || []).map(s => domainOf(s) + ' ' + s.uri));
+        const done = () => pop({ title: 'Copied', type: 'ok', html: '<div>The notes are copied. Paste them into Smart Notes or any document.</div>' });
+        try { navigator.clipboard.writeText(t).then(done, () => pop({ title: 'Could not copy', type: 'warn', html: '<div>Your browser blocked copying.</div>' })); } catch (e) { pop({ title: 'Could not copy', type: 'warn', html: '<div>Your browser blocked copying.</div>' }); }
+    }
+    window.caRender = render;
+    load();
 })();
 </script>
 
