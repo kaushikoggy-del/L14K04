@@ -5484,6 +5484,9 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
     const qKey = q => { const m = String(q.qNo).match(/^(\d+)\s*([a-z]?)/i); return (m ? Number(m[1]) : 999) * 100 + (m && m[2] ? m[2].toLowerCase().charCodeAt(0) - 96 : 0); };
     const sortQs = l => l.slice().sort((a, b) => b.year - a.year || String(a.paper).localeCompare(String(b.paper)) || qKey(a) - qKey(b));
     const num = v => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : null; };
+    const DEV = /[\u0900-\u097F]+/g;                                  // Hindi (Devanagari) characters
+    const hindiShare = t => { const d = (String(t ?? '').match(/[\u0900-\u097F]/g) || []).length, l = (String(t ?? '').match(/[A-Za-z\u0900-\u097F]/g) || []).length; return l ? d / l : 0; };   // share of letters that are Hindi
+    const noHindi = t => String(t ?? '').replace(DEV, ' ').replace(/[ \t]+/g, ' ').replace(/\s+\n/g, '\n').trim();
 
     // ---------- Import tab: mode switch + file ----------
     window.setImportMode = function (mode) {
@@ -5533,6 +5536,7 @@ Rules:
 - question is the complete text exactly as printed. Join broken lines and fix line-break hyphenation. Do NOT paraphrase, summarise or invent anything. Do NOT put the marks or word limit inside the question text.
 - marks and words are numbers if printed (e.g. "(Answer in 150 words) 10" means words 150, marks 10), otherwise null.
 - GS4 case studies are questions too; keep the whole case-study text in question.
+- The paper is BILINGUAL: every question appears in English and again in Hindi (Devanagari). Extract ONLY the English version. Ignore all Hindi text completely. Never translate, never include any Hindi word, and return each question only once.
 - Ignore instructions, headers, footers, page numbers and section titles.`;
         const parts = [{ text: prompt }];
         if (file) parts.push({ inlineData: { mimeType: file.type || 'application/pdf', data: await toB64(file) } });
@@ -5558,7 +5562,8 @@ Rules:
     }
     // basic offline reader for pasted text (used only if Gemini fails)
     function ruleParse(text) {
-        const lines = String(text).split('\n'), blocks = []; let cur = [], lastN = 0;
+        // English only: a mostly-Hindi line is dropped; any stray Hindi characters left in an English line are removed
+        const lines = String(text).split('\n').filter(l => hindiShare(l) <= 0.4).map(l => /[\u0900-\u097F]/.test(l) ? noHindi(l) : l).filter(l => l.trim()), blocks = []; let cur = [], lastN = 0;
         for (const ln of lines) {
             const m = ln.match(/^\s*(?:Q\.?\s*)?(\d{1,2})\s*[.)]\s+\S/i);
             if (m) { const n = parseInt(m[1], 10); if (n === lastN + 1 || (lastN === 0 && n === 1)) { if (cur.length) blocks.push(cur.join('\n')); cur = [ln]; lastN = n; continue; } }
@@ -5578,7 +5583,8 @@ Rules:
     function normalize(arr) {
         const seen = new Set(), out = [];
         arr.forEach((it, i) => {
-            const question = String(it && (it.question || it.text) || '').replace(/\s+\n/g, '\n').trim();
+            const rawQ = String(it && (it.question || it.text) || ''); if (hindiShare(rawQ) > 0.4) return;   // a Hindi question: skip
+            const question = noHindi(rawQ);
             if (question.length < 10) return;
             let qNo = String(it.qNo ?? it.number ?? (i + 1)).trim().replace(/^q\.?\s*/i, '') || String(i + 1);
             let k = qNo, n = 2; while (seen.has(k.toLowerCase())) { k = qNo + '_' + n++; } seen.add(k.toLowerCase());
