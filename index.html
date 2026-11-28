@@ -4530,7 +4530,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         if (!r.ok) {
             const m = (d.error && d.error.message) || ('HTTP ' + r.status);
             const kind = r.status === 429 ? 'quota' : (r.status === 401 || r.status === 403) ? 'key' : r.status === 503 ? 'busy' : (r.status === 400 || r.status === 404) ? 'model' : 'other';
-            throw new ExplErr(`${r.status}: ${m}`, kind);
+            throw new ExplErr(`${r.status} [${model}${useSearch ? ' +search' : ''}]: ${m}`, kind);
         }
         const c = d.candidates && d.candidates[0];
         const text = c && c.content && c.content.parts ? c.content.parts.filter(p => p.text && !p.thought).map(p => p.text).join('').trim() : '';
@@ -4540,6 +4540,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         return { text, sources: sources.slice(0, 6), grounded: useSearch };
     }
     const keyCool = {}, keyQFails = {};
+    const modelOk = {};   // per key: the model that last worked (tried first next time)
     let lastQuotaMsg = '', lastKeyErr = '';   // what Google last said (shown in the status bar when every key is resting)
     const minCoolLeft = keys => { const now = Date.now(); const left = keys.map(k => (keyCool[k] || 0) - now).filter(x => x > 0); return left.length ? Math.min(...left) : 0; };
     const availGeminiKeys = () => getKeys().filter(k => !((keyCool[k] || 0) > Date.now())).length;
@@ -4555,16 +4556,18 @@ If reliable sources clearly disagree with the official key, add a last line star
         const order = (opts && opts.onlyKey) ? [opts.onlyKey] : avail.map((_, i) => avail[(off + i) % avail.length]);   // onlyKey = verify workers use exactly the key they leased
         if (!order.length && keys.length) { last = new ExplErr('All Gemini keys are resting after reaching their limit', 'quota'); last.retryMs = Math.max(10000, minCoolLeft(keys)); }
         for (let k = 0; k < order.length; k++) {
-            const key = order[k]; let hitQuota = false;
-            const models = await getModels(key);
+            const key = order[k]; let tried = 0, quotaN = 0;
+            const allModels = await getModels(key);
+            const models = (modelOk[key] && allModels.includes(modelOk[key])) ? [modelOk[key], ...allModels.filter(m => m !== modelOk[key])] : allModels;
             for (const useSearch of ((opts && opts.noSearch) ? [false] : needSearch ? [true] : [true, false])) {
                 for (const model of models) {
-                    try { const out = await callOnce(key, model, q, useSearch, opts); keyQFails[key] = 0; out.model = model; out.provider = 'gemini'; return out; }
-                    catch (e) { last = e; if (e.kind === 'quota') { hitQuota = true; lastQuotaMsg = String(e.message || ''); } if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
+                    tried++;
+                    try { const out = await callOnce(key, model, q, useSearch, opts); keyQFails[key] = 0; modelOk[key] = model; out.model = model; out.provider = 'gemini'; return out; }
+                    catch (e) { last = e; if (e.kind === 'quota') { quotaN++; lastQuotaMsg = String(e.message || ''); continue; } if (e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
                 }
                 if (last && last.kind === 'key') break;
             }
-            if (hitQuota) {   // rest this key. Escalate ONCE per rest period (not once per parallel request) and follow Google's own "retry in Ns" hint when it gives one
+            if (quotaN > 0 && quotaN === tried) {   // every model tried on this key was over quota: rest this key. Escalate ONCE per rest period (not once per parallel request) and follow Google's own "retry in Ns" hint when it gives one
                 const nowT = Date.now();
                 if (!((keyCool[key] || 0) > nowT)) {
                     keyQFails[key] = (keyQFails[key] || 0) + 1;
@@ -4736,7 +4739,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
                 if (!sp) { delay = EXPL_DELAY_MS; if (vs.ok) lastMsg = `Verified ${vs.ok}${vs.fixed ? ' - ' + vs.fixed + ' corrected' : ' - no changes needed'}`; }
                 else if (sp.type === 'rest') {   // every key is resting: the next free key takes over automatically
                     delay = sp.ms;
-                    const why = lastKeyErr && !lastQuotaMsg ? ' | Key error: ' + lastKeyErr.replace(/\s+/g, ' ').slice(0, 140) : (lastQuotaMsg ? ' | Google said: ' + lastQuotaMsg.replace(/\s+/g, ' ').slice(0, 160) : '');
+                    const why = lastKeyErr && !lastQuotaMsg ? ' | Key error: ' + lastKeyErr.replace(/\s+/g, ' ').slice(0, 140) : (lastQuotaMsg ? ' | Google said: ' + lastQuotaMsg.replace(/\s+/g, ' ').slice(0, 320) : '');
                     lastMsg = `Verifying - all keys resting after their limit, next key back in ${Math.ceil(delay / 1000)} s (${availGeminiKeys()} of ${getKeys().length} keys ready)${why}`;
                 } else { delay = 10 * 60000; consecutiveErrors = 0; }
                 updateBar();
