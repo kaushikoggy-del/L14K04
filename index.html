@@ -4405,7 +4405,30 @@ function confirmSubmitCbt() {
               <button type="button" onclick="explTogglePause()" class="text-sky-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button>
               <button type="button" onclick="explExport()" class="text-gray-400 hover:underline">Export</button>
               <button type="button" onclick="document.getElementById('expl-import-input').click()" class="text-gray-400 hover:underline">Import</button>
-            </span>`;
+            </span>
+            <div style="flex-basis:100%">${rangeLine()}</div>`;
+        checkRangeDone();
+    }
+    // ----- 2014-2026 progress line (these are written FIRST, so Elimination logic can be started) -----
+    function rangeStats() {
+        const qs = pyqDatabase.filter(q => { const y = Number(q.year); return y >= 2014 && y <= 2026 && /^[A-D]$/i.test(String(q.officialKey || '')); });
+        const done = qs.filter(q => explMap[q.id]).length, usable = qs.filter(q => explMap[q.id] && !isUnverified(explMap[q.id])).length;
+        return { n: qs.length, done, usable };
+    }
+    function rangeLine() {
+        const r = rangeStats(); if (!r.n) return '';
+        const elimPaused = (() => { try { return localStorage.getItem('elim_paused') !== '0'; } catch (e) { return true; } })();
+        if (r.done < r.n) return `<span class="text-gray-400">2014-2026 explanations (written first): <b class="text-sky-300">${r.done}</b> / ${r.n} &middot; ${r.n - r.done} left</span>`;
+        const unv = r.n - r.usable;
+        return `<span class="text-emerald-300"><i class="fa-solid fa-circle-check"></i> Done: all ${r.n} questions of 2014-2026 have explanations.</span> ` +
+            (unv ? `<span class="text-amber-300">${unv} of them are Unverified, so Elimination logic skips them until Gemini verifies them (press "Verify with Gemini"). ${r.usable} are ready for elimination now.</span>` : `<span class="text-gray-300">You can start the Elimination logic now.</span>`) +
+            (elimPaused && r.usable ? ` <button type="button" onclick="elimTogglePause()" class="ml-1 px-2 py-0.5 rounded border border-emerald-400/60 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30 font-semibold">Start Elimination logic</button>` : '');
+    }
+    function checkRangeDone() {
+        const r = rangeStats(); if (!r.n || r.done < r.n) return;
+        let seen = null; try { seen = localStorage.getItem('expl_range_done_v1'); } catch (e) {}
+        if (seen) return; try { localStorage.setItem('expl_range_done_v1', String(r.n)); } catch (e) {}
+        showPopup({ title: '2014-2026 explanations are done', type: 'ok', html: `<div>All <b>${r.n}</b> questions of 2014-2026 now have explanations.</div>` + (r.n - r.usable ? `<div class="text-amber-300">${r.n - r.usable} are still Unverified, so Elimination logic will skip them until Gemini verifies them.</div>` : '<div>You can start the Elimination logic now (press Resume on the green bar).</div>') });
     }
     window.explDeleteMany = function (ids) {
         ids.forEach(id => { delete explMap[id]; });
