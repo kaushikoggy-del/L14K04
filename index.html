@@ -6011,6 +6011,8 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
     const NATURE = { static: ['Static - no current affairs needed', 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'], mixed: ['Mixed - static + current affairs', 'text-amber-300 border-amber-500/40 bg-amber-500/10'], dynamic: ['Dynamic - current affairs heavy', 'text-rose-300 border-rose-500/40 bg-rose-500/10'] };
     const QT = { static: ['Static', 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'], medium: ['Medium (static, inspired by current affairs)', 'text-amber-300 border-amber-500/40 bg-amber-500/10'], dynamic: ['Dynamic (current affairs)', 'text-rose-300 border-rose-500/40 bg-rose-500/10'] };
     const QT_SHORT = { static: 'Static', medium: 'Medium', dynamic: 'Dynamic' };
+    const ESSAY_THEMES = ['On Change, Permanence & Identity', 'On Reality, Perception & Truth', 'On Action, Risk & Potential', 'On The Nature of Happiness & The Good Life', 'On Simplicity, Purpose & The Journey', 'On Knowledge & Wisdom', 'On Humanity & Values', 'On Power & Responsibility', 'On Justice & Charity', 'On Choice, Wrong & Right', 'On Religion, Belief & Faith', 'On Education, Creative Thinking & Innovation', 'Democratic Governance & Information', 'International Relations, Geopolitics & Security', 'Science, Technology & the Future', 'Economic Growth, Development & Inequality', 'Environment, Ecology & Sustainable Civilisations', 'Contemporary Social Dynamics'];
+    const ESSAY_KIND = { abstract: ['Abstract / philosophical', 'text-sky-300 border-sky-500/40 bg-sky-500/10'], topical: ['Topical / contemporary', 'text-rose-300 border-rose-500/40 bg-rose-500/10'] };
     const LS_SYL = 'mains_syllabus_v1', LS_SUG = 'mains_suggest_v1';
     const loadJ = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v && typeof v === 'object' ? v : d; } catch (e) { return d; } };
     const saveJ = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
@@ -6023,8 +6025,8 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
     const ui = { tab: 'questions', paper: 'GS2', subject: '', open: {}, editQ: null, busy: '', tagging: false, stop: false, progress: '', synPaper: '' };
     const api = () => window.mainsApi;
     const sleep = ms => new Promise(r => setTimeout(r, ms));
-    const norm = x => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-    const subjectsOf = p => ((syl[p] && syl[p].subjects) || []);
+    const norm = x => String(x || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
+    const subjectsOf = p => p === 'ESSAY' ? ESSAY_THEMES.map(n => ({ name: n, nature: 'mixed', topics: [] })) : ((syl[p] && syl[p].subjects) || []);
     const mainQs = p => (api() ? api().all() : []).filter(q => q.paper === p);
     function matchName(list, s) {
         const n = norm(s); if (!n) return null;
@@ -6098,10 +6100,11 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         const sel = 'bg-black/30 border border-gray-600 rounded-lg px-2 py-1';
         const untagged = all.filter(q => !q.tag).length;
         let h = `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300 bg-card p-3 rounded-xl border border-gray-700/60">
-            <label class="flex items-center gap-1">Paper <select data-mc="paper" class="${sel}">${GS.map(k => `<option value="${k}" ${k === p ? 'selected' : ''}>${esc(GS_NAME[k])}</option>`).join('')}</select></label>
+            <label class="flex items-center gap-1">Paper <select data-mc="paper" class="${sel}">${GS.concat(['ESSAY']).map(k => `<option value="${k}" ${k === p ? 'selected' : ''}>${esc(GS_NAME[k] || 'Essay Paper (18 themes)')}</option>`).join('')}</select></label>
             <span><b class="text-violet-300">${all.length}</b> questions &middot; <b class="text-emerald-300">${all.length - untagged}</b> tagged &middot; <b class="${untagged ? 'text-amber-300' : 'text-gray-400'}">${untagged}</b> not tagged</span>
             <span class="ml-auto flex flex-wrap gap-3 items-center"><span class="text-violet-300">${esc(ui.progress)}</span>
-            ${(all.length - untagged) ? '<button type="button" data-ms="automark" class="text-emerald-300 hover:underline"><i class="fa-solid fa-scale-balanced"></i> Mark Static / Mixed / Dynamic from PYQs</button>' : ''}${ui.tagging ? '<button type="button" data-ms="stoptag" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>' : `<button type="button" data-ms="tag" ${(!subs.length || !all.length) ? 'disabled style="opacity:.5"' : ''} class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-bold"><i class="fa-solid fa-tags"></i> Tag ${untagged ? untagged + ' new' : 'all'} questions (AI)</button>${all.length - untagged ? '<button type="button" data-ms="retag" class="text-amber-300 hover:underline">Re-tag everything</button>' : ''}`}</span></div>`;
+            ${(all.length - untagged && p !== 'ESSAY') ? '<button type="button" data-ms="automark" class="text-emerald-300 hover:underline"><i class="fa-solid fa-scale-balanced"></i> Mark Static / Mixed / Dynamic from PYQs</button>' : ''}${ui.tagging ? '<button type="button" data-ms="stoptag" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>' : `<button type="button" data-ms="tag" ${(!subs.length || !all.length) ? 'disabled style="opacity:.5"' : ''} class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-bold"><i class="fa-solid fa-tags"></i> Tag ${untagged ? untagged + ' new' : 'all'} questions (AI)</button>${all.length - untagged ? '<button type="button" data-ms="retag" class="text-amber-300 hover:underline">Re-tag everything</button>' : ''}`}</span></div>`;
+        if (p === 'ESSAY') { el.innerHTML = h + (all.length ? essayView(all) : '<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300">No Essay topics saved yet. Upload them from Import &amp; AI Tagger &gt; Mains &gt; Essay Paper.</div>'); return; }
         if (!subs.length) { el.innerHTML = h + `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300 space-y-2"><div>First add the syllabus of ${esc(p)} in the <b>Syllabus</b> tab and mark each subject as Static / Mixed / Dynamic.</div><button type="button" data-ms-tab="syllabus" class="px-3 py-1.5 bg-violet-600 text-white rounded-lg font-bold">Open Syllabus tab</button></div>`; return; }
         if (!all.length) { el.innerHTML = h + `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300">No ${esc(p)} questions saved yet. Upload them from Import &amp; AI Tagger &gt; Mains.</div>`; return; }
         // paper overview
@@ -6203,12 +6206,14 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         else if (a === 'qsave') {
             const q = api().all().find(x => x.id === b.dataset.id); if (!q) return;
             const [subject, topic] = String(document.getElementById('qe-topic').value).split('||');
-            const nq = { ...q, tag: { ...q.tag, subject, topic, qtype: document.getElementById('qe-type').value, dimension: document.getElementById('qe-dim').value.trim(), by: 'you' } };
+            const nq = q.paper === 'ESSAY' ? { ...q, tag: { ...q.tag, subject, topic: '', kind: document.getElementById('qe-type').value, dimension: document.getElementById('qe-dim').value.trim(), by: 'you' } } : { ...q, tag: { ...q.tag, subject, topic, qtype: document.getElementById('qe-type').value, dimension: document.getElementById('qe-dim').value.trim(), by: 'you' } };
             try { await api().put([nq]); } catch (err) { pop({ title: 'Could not save', type: 'error', html: `<div>${esc(err.message)}</div>` }); return; }
             ui.editQ = null; refresh();
         }
         else if (a === 'automark') autoMark();
         else if (a === 'suggest') await suggest(b.dataset.k);
+        else if (a === 'essaysuggest') await essaySuggest(b.dataset.k);
+        else if (a === 'essaycopy') essayCopy();
         else if (a === 'copydims') copyDims(b.dataset.s);
     }
 
@@ -6239,6 +6244,98 @@ ${raw.slice(0, 12000)}`;
         refresh();
     }
 
+    // ---------- Essay: 18 themes ----------
+    function essayPrompt(bt) {
+        return `You are an expert UPSC Essay paper analyst. Put each essay topic below under ONE of these 18 themes (use the EXACT theme name):
+${ESSAY_THEMES.map((t, i) => `${i + 1}. ${t}`).join('\n')}
+
+For each essay topic give:
+- theme: the exact theme name
+- angle: the specific idea it is about, 2-6 words (e.g. "wisdom vs information", "technology and jobs", "women in leadership")
+- kind: "abstract" = a quote / philosophical statement (no news needed); "topical" = about a contemporary issue, policy, technology, economy or world affairs
+
+ESSAY TOPICS:
+${bt.map((q, i) => `[${i + 1}] (${q.year}${q.section ? ', Section ' + q.section : ''}) ${String(q.question).replace(/\s+/g, ' ').slice(0, 500)}`).join('\n')}
+
+Reply ONLY with a JSON array: [{"n":1,"theme":"","angle":"","kind":"abstract"}]`;
+    }
+    function essayView(all) {
+        const tagged = all.filter(q => q.tag), lastY = Math.max(...all.map(q => q.year), 0);
+        const byTheme = t => tagged.filter(q => q.tag.subject === t);
+        const stray = tagged.filter(q => !ESSAY_THEMES.includes(q.tag.subject));
+        const secOf = qs => { const a = qs.filter(q => /^a/i.test(q.section || '')).length, b = qs.filter(q => /^b/i.test(q.section || '')).length; return (a || b) ? `A:${a} B:${b}` : '-'; };
+        const kindBar = qs => { const a = qs.filter(q => q.tag.kind === 'abstract').length, t = qs.length - a; return qs.length ? `<span class="text-sky-300">${a} abstract</span> / <span class="text-rose-300">${t} topical</span>` : '<span class="text-gray-600">-</span>'; };
+        const rows = ESSAY_THEMES.map(t => ({ t, qs: byTheme(t) }));
+        if (stray.length) rows.push({ t: 'Unmatched', qs: stray, stray: true });
+        const never = rows.filter(r => !r.qs.length).length;
+        let h = `<div class="bg-card p-4 rounded-xl border border-violet-500/30 space-y-3 text-xs text-gray-300">
+            <div class="flex flex-wrap items-center gap-3"><div class="text-sm font-bold text-gray-100">Essay - theme-wise picture</div><span><b class="text-violet-300">${tagged.length}</b> essay topics arranged &middot; <b class="${never ? 'text-amber-300' : 'text-gray-400'}">${never}</b> themes never asked</span>
+            <button type="button" data-ms="essaycopy" class="ml-auto text-sky-300 hover:underline"><i class="fa-solid fa-copy"></i> Copy theme checklist</button></div>
+            ${tagged.length ? '' : '<div class="text-amber-300">Press the Tag button above so the AI can arrange the essays under the 18 themes.</div>'}
+            <table class="w-full"><thead><tr class="text-gray-400 text-left"><th class="font-normal pr-3">Theme</th><th class="font-normal pr-3">Essays</th><th class="font-normal pr-3">Years asked</th><th class="font-normal pr-3">Section</th><th class="font-normal pr-3">Kind</th><th class="font-normal">Status</th></tr></thead><tbody>`;
+        rows.slice().sort((a, b) => b.qs.length - a.qs.length).forEach(r => {
+            const last = r.qs.length ? Math.max(...r.qs.map(q => q.year)) : 0, key = 'ESSAY|' + r.t, open = !!ui.open[key];
+            const status = !r.qs.length ? '<span class="text-amber-300">Never asked</span>' : (lastY - last >= 5 ? `<span class="text-sky-300">Not asked since ${last}</span>` : `<span class="text-gray-400">Last: ${last}</span>`);
+            h += `<tr class="border-t border-gray-700/40 cursor-pointer hover:bg-white/5" data-ms="topic" data-k="${esc(key)}"><td class="py-1.5 pr-3 text-gray-100">${open ? '&#9662;' : '&#9656;'} ${esc(r.t)}</td><td class="pr-3">${r.qs.length || '-'}</td><td class="pr-3">${yrChips(r.qs) || '<span class="text-gray-600">-</span>'}</td><td class="pr-3">${secOf(r.qs)}</td><td class="pr-3">${kindBar(r.qs)}</td><td>${status}</td></tr>`;
+            if (open) h += `<tr><td colspan="6" class="pb-3">${essayDetail(r)}</td></tr>`;
+        });
+        return h + '</tbody></table></div>';
+    }
+    function essayDetail(r) {
+        const by = {}; r.qs.forEach(q => { const d = String(q.tag.dimension || 'General').trim() || 'General'; (by[norm(d)] = by[norm(d)] || { d, qs: [] }).qs.push(q); });
+        let h = '<div class="ml-4 space-y-2 border-l border-gray-700 pl-3">';
+        if (!r.qs.length) h += '<div class="text-gray-500">No essay has come from this theme in the saved papers.</div>';
+        h += Object.values(by).sort((a, b) => b.qs.length - a.qs.length).map(g => `<div class="bg-black/20 rounded-lg p-2"><div class="flex flex-wrap items-center gap-2"><b class="text-gray-100">${esc(g.d)}</b><span class="text-gray-500">${g.qs.length} essay${g.qs.length > 1 ? 's' : ''}</span><span class="ml-auto">${yrChips(g.qs)}</span></div>
+            ${g.qs.slice().sort((a, b) => b.year - a.year).map(q => ui.editQ === q.id ? essayEdit(q) : `<div class="mt-1.5 flex gap-2 items-start"><div class="flex-1"><span class="text-gray-500">${q.year}${q.section ? ' Sec ' + esc(q.section) : ''} Q${esc(q.qNo)} ${q.tag.kind === 'topical' ? chip('Topical', ESSAY_KIND.topical[1]) : chip('Abstract', ESSAY_KIND.abstract[1])}:</span> <span class="text-gray-300">${esc(q.question.length > 300 ? q.question.slice(0, 300) + '...' : q.question)}</span></div><button type="button" data-ms="qedit" data-id="${esc(q.id)}" class="text-sky-300 hover:underline shrink-0">Edit tag</button></div>`).join('')}</div>`).join('');
+        const sk = 'ESSAY|' + r.t, sg = sug[sk];
+        h += `<div class="pt-1"><button type="button" data-ms="essaysuggest" data-k="${esc(sk)}" class="px-3 py-1.5 bg-sky-700 hover:bg-sky-600 text-white rounded-lg font-bold" ${ui.busy ? 'disabled' : ''}><i class="fa-solid fa-lightbulb"></i> ${sg ? 'Refresh' : 'Suggest'} other angles to prepare (AI)</button> <span class="text-violet-300">${ui.busy === sk ? 'Thinking...' : ''}</span></div>`;
+        if (sg && sg.items) h += `<div class="bg-sky-500/5 border border-sky-500/30 rounded-lg p-2 space-y-1"><div class="text-sky-300 font-semibold">Angles not asked yet - worth preparing</div>${sg.items.map(i => `<div><b class="text-gray-100">${esc(i.dimension)}</b> ${i.kind === 'ca' ? chip('Contemporary', ESSAY_KIND.topical[1]) : chip('Abstract', ESSAY_KIND.abstract[1])} <span class="text-gray-400">${esc(i.why || '')}</span>${i.hook ? ` <span class="text-amber-300">Use: ${esc(i.hook)}</span>` : ''}</div>`).join('')}<div class="text-[10px] text-gray-500">Written by AI from its own knowledge, not from a live news feed. Verify any current example before using it.</div></div>`;
+        return h + '</div>';
+    }
+    function essayEdit(q) {
+        const sel = 'bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100';
+        return `<div class="mt-1.5 p-2 rounded bg-violet-500/10 border border-violet-500/30 space-y-1.5"><div class="text-gray-400">${q.year} Q${esc(q.qNo)}: ${esc(q.question.slice(0, 120))}...</div>
+            <div class="flex flex-wrap gap-2"><select id="qe-topic" class="${sel}">${ESSAY_THEMES.map(t => `<option value="${esc(t + '||')}" ${q.tag.subject === t ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>
+            <select id="qe-type" class="${sel}"><option value="abstract" ${q.tag.kind !== 'topical' ? 'selected' : ''}>Abstract / philosophical</option><option value="topical" ${q.tag.kind === 'topical' ? 'selected' : ''}>Topical / contemporary</option></select>
+            <input id="qe-dim" value="${esc(q.tag.dimension || '')}" placeholder="Angle (e.g. wisdom vs information)" class="${sel} w-60"></div>
+            <div class="flex gap-3"><button type="button" data-ms="qsave" data-id="${esc(q.id)}" class="px-3 py-1 bg-emerald-600 text-white rounded font-bold">Save</button><button type="button" data-ms="qcancel" class="px-3 py-1 bg-slate-600 text-white rounded font-bold">Cancel</button></div></div>`;
+    }
+    async function essaySuggest(key) {
+        const th = key.split('|')[1]; if (ui.busy) return;
+        const qs = mainQs('ESSAY').filter(q => q.tag && q.tag.subject === th);
+        ui.busy = key; refresh();
+        const prompt = `You are a senior UPSC Essay mentor. Theme: "${th}".
+Essay topics UPSC has ALREADY asked under this theme (year: angle - topic):
+${qs.length ? qs.map(q => `${q.year}: ${q.tag.dimension || '?'} - ${String(q.question).replace(/\s+/g, ' ').slice(0, 160)}`).join('\n') : '(nothing asked yet)'}
+
+List 6 to 8 OTHER angles of this theme that could come in the Essay paper and are not repeats. For each give:
+- dimension: 2-6 words
+- why: one short line in plain English on how the topic could be worded
+- kind: "abstract" (quote / philosophy) or "ca" (contemporary issue)
+- hook: for a contemporary angle, a real recent example, report or event you are SURE about (one short phrase); otherwise a thinker, book or historical example worth using; if unsure, an empty string. Never invent anything.
+Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"abstract","hook":""}]`;
+        try {
+            const out = await ai(prompt, 4096);
+            const items = jsonFrom(out.text, '[', ']').filter(i => i && i.dimension).slice(0, 10).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: i.kind === 'ca' ? 'ca' : 'abstract', hook: String(i.hook || '') }));
+            if (!items.length) throw new Error('No angles returned.');
+            sug[key] = { items, ts: Date.now() }; saveJ(LS_SUG, sug);
+        } catch (e) { pop({ title: 'Could not get suggestions', type: 'error', html: `<div>${esc(errText(e))}</div>` }); }
+        ui.busy = ''; refresh();
+    }
+    function essayCopy() {
+        const qs = mainQs('ESSAY').filter(q => q.tag); let t = '# Essay - theme checklist\n';
+        ESSAY_THEMES.forEach(th => {
+            const tq = qs.filter(q => q.tag.subject === th); t += `\n## ${th}\n`;
+            if (!tq.length) t += '- (never asked)\n';
+            const by = {}; tq.forEach(q => { const d = q.tag.dimension || 'General'; (by[norm(d)] = by[norm(d)] || { d, y: [] }).y.push(q.year); });
+            Object.values(by).forEach(g => { t += `- [ ] ${g.d} - asked: ${g.y.sort().join(', ')}\n`; });
+            const sg = sug['ESSAY|' + th]; if (sg) sg.items.forEach(i => { t += `- [ ] ${i.dimension} - to prepare${i.hook ? ': ' + i.hook : ''}\n`; });
+        });
+        const done = () => pop({ title: 'Copied', type: 'ok', html: '<div>The Essay theme checklist is copied. Paste it into your notes.</div>' });
+        const manual = () => pop({ title: 'Copy this checklist', type: 'ok', html: `<textarea readonly rows="12" class="w-full bg-black/40 border border-gray-600 rounded p-2 text-xs text-gray-200">${esc(t)}</textarea>` });
+        try { navigator.clipboard.writeText(t).then(done, manual); } catch (e) { manual(); }
+    }
+
     async function tagQuestions(all) {
         const p = ui.paper, subs = subjectsOf(p); if (!subs.length || ui.tagging) return;
         const todo = mainQs(p).filter(q => all || !q.tag).sort((a, b) => b.year - a.year);
@@ -6251,7 +6348,7 @@ ${raw.slice(0, 12000)}`;
         const worker = async () => {
             while (queue.length && !ui.stop) {
                 const bt = queue.shift();
-                const prompt = `You are an expert UPSC Mains analyst. Paper: ${p}.
+                const prompt = p === 'ESSAY' ? essayPrompt(bt) : `You are an expert UPSC Mains analyst. Paper: ${p}.
 Syllabus subjects and topics (use these EXACT names):
 ${catalog}
 
@@ -6271,6 +6368,7 @@ Reply ONLY with a JSON array: [{"n":1,"subject":"","topic":"","dimension":"","ty
                     const arr = jsonFrom(out.text, '[', ']'), recs = [];
                     arr.forEach(r => {
                         const q = bt[Number(r.n) - 1]; if (!q) return;
+                        if (p === 'ESSAY') { const th = matchName(ESSAY_THEMES, r.theme || r.subject) || 'Unmatched'; recs.push({ ...q, tag: { subject: th, topic: '', dimension: String(r.angle || r.dimension || '').trim(), kind: /top|contem|curr/i.test(String(r.kind || '')) ? 'topical' : 'abstract', by: 'ai', ts: Date.now() } }); return; }
                         const sb = subs.find(s => norm(s.name) === norm(matchName(subs.map(x => x.name), r.subject) || '')) || null;
                         const topic = sb ? (matchName(sb.topics, r.topic) || String(r.topic || '').trim()) : String(r.topic || '').trim();
                         const qt = String(r.type || '').toLowerCase().startsWith('dyn') ? 'dynamic' : String(r.type || '').toLowerCase().startsWith('med') ? 'medium' : 'static';
