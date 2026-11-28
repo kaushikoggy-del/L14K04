@@ -4397,7 +4397,7 @@ function confirmSubmitCbt() {
         const paused = isPaused();
         const unv = pyqDatabase.filter(q => Number(q.year) >= 2014 && Number(q.year) <= 2026 && isUnverified(explMap[q.id])).length;
         el.innerHTML = `<span><i class="fa-solid fa-lightbulb text-sky-300"></i> Explanations ready: <b class="text-sky-300">${done}</b> / ${total}${unv ? ` &middot; <span class="text-amber-300">Unverified: <b>${unv}</b></span>` : ''}</span>
-            <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}${(!paused && /busy|limit|quota/i.test(lastMsg) && strictOn()) ? ` <button type="button" onclick="explToggleStrict()" class="ml-2 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30 font-semibold">Turn Strict OFF - let Groq continue (unverified)</button>` : ''}</span>
+            <span class="text-gray-500">${esc(paused && !verifyOn() ? 'Paused' : lastMsg)}${(!paused && /busy|limit|quota/i.test(lastMsg) && strictOn()) ? ` <button type="button" onclick="explToggleStrict()" class="ml-2 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30 font-semibold">Turn Strict OFF - let Groq continue (unverified)</button>` : ''}</span>
             <span class="flex flex-wrap gap-3">
               <button type="button" onclick="explToggleVerify()" class="text-emerald-300 hover:underline">${verifyOn() ? 'Stop verifying' : 'Verify with Gemini'}${unv ? ' (' + unv + ')' : ''}</button>
               <button type="button" onclick="explToggleStrict()" title="Strict = explanations written only with Gemini web search" class="px-2 py-0.5 rounded border font-semibold ${strictOn() ? 'border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30' : 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30'}">${strictOn() ? 'Strict is ON - click to turn OFF' : 'Strict is OFF - click to turn ON'}</button>
@@ -4415,12 +4415,19 @@ function confirmSubmitCbt() {
         const done = qs.filter(q => explMap[q.id]).length, usable = qs.filter(q => explMap[q.id] && !isUnverified(explMap[q.id])).length;
         return { n: qs.length, done, usable };
     }
+    function verifyStats() {
+        const qs = pyqDatabase.filter(q => { const y = Number(q.year); return y >= 2014 && y <= 2026 && explMap[q.id]; });
+        const ok = qs.filter(q => !isUnverified(explMap[q.id]));
+        return { total: qs.length, verified: ok.length, fixed: qs.filter(q => explMap[q.id].fixed).length, active: qs.filter(q => inflight.has(q.id)).length };
+    }
     function rangeLine() {
         const r = rangeStats(); if (!r.n) return '';
         const elimPaused = (() => { try { return localStorage.getItem('elim_paused') !== '0'; } catch (e) { return true; } })();
         if (r.done < r.n) return `<span class="text-gray-400">2014-2026 explanations (written first): <b class="text-sky-300">${r.done}</b> / ${r.n} &middot; ${r.n - r.done} left</span>`;
         const unv = r.n - r.usable;
-        return `<span class="text-emerald-300"><i class="fa-solid fa-circle-check"></i> Done: all ${r.n} questions of 2014-2026 have explanations.</span> ` +
+        const vr = verifyStats();
+        const vline = (verifyOn() || vr.fixed || vr.verified) ? `<div style="flex-basis:100%" class="text-emerald-300"><i class="fa-solid fa-shield-halved"></i> Verified with Gemini (2014-2026): <b>${vr.verified}</b> / ${vr.total} &middot; ${vr.total - vr.verified} left &middot; ${vr.fixed} corrected${vr.active ? ` &middot; <span class="text-sky-300">${vr.active} being checked right now</span>` : ''}</div>` : '';
+        return vline + `<span class="text-emerald-300"><i class="fa-solid fa-circle-check"></i> Done: all ${r.n} questions of 2014-2026 have explanations.</span> ` +
             (unv ? `<span class="text-amber-300">${unv} of them are Unverified, so Elimination logic skips them until Gemini verifies them (press "Verify with Gemini"). ${r.usable} are ready for elimination now.</span>` : `<span class="text-gray-300">You can start the Elimination logic now.</span>`) +
             (elimPaused && r.usable ? ` <button type="button" onclick="elimTogglePause()" class="ml-1 px-2 py-0.5 rounded border border-emerald-400/60 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30 font-semibold">Start Elimination logic</button>` : '');
     }
@@ -4656,7 +4663,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
         if (running) return; running = true;
         let delay = EXPL_DELAY_MS;
         try {
-            if (isPaused()) { updateBar(); delay = 30000; return; }
+            if (isPaused() && !verifyOn()) { updateBar(); delay = 30000; return; }   // pressing Verify works even while writing is paused
             if (!getKeys().length && !getAltKeys().length) { lastMsg = 'Add a Gemini API key in Settings to start'; updateBar(); delay = 60000; return; }
             const vlanes = Math.min(15, Math.max(1, availGeminiKeys()));
             const vbatch = [];
@@ -4687,6 +4694,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
                 updateBar();
                 return;
             }
+            if (isPaused()) { updateBar(); delay = 30000; return; }
             const lanes = Math.min(15, Math.max(1, availGeminiKeys()));          // write up to 15 explanations at once, each on a different (non-resting) key
             const batch = [];
             for (let i = 0; i < lanes; i++) { const t = nextTarget(); if (!t) break; inflight.add(t.id); batch.push(t); }
