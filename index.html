@@ -5677,7 +5677,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
                 mainsStatus('Reading the file...');
                 return await callBatch([{ text: prompt(false) }, { inlineData: { mimeType: file.type || 'application/pdf', data: await toB64(file) } }], 'Whole file', false);
             }
-            const failed = [], merged = new Map(), keyCount = pk.gem.length + pk.groq.length + pk.or.length;
+            const failed = [], local = [], merged = new Map(), keyCount = pk.gem.length + pk.groq.length + pk.or.length;
             const build = async (b, only) => {
                 const f = b.nums[0], l = b.nums[b.nums.length - 1];
                 if (b.type === 'text') {
@@ -5696,7 +5696,12 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
                     for (;;) {
                         const i = next++; if (i >= batches.length) return; const b = batches[i], lab = `${tag}Batch ${i + 1}/${batches.length} (P.${b.nums[0]}${b.nums.length > 1 ? '-' + b.nums[b.nums.length - 1] : ''})`;
                         try { const { parts, expect } = await build(b, only); results[i] = await callBatch(parts, lab, expect); }
-                        catch (e) { failed.push(`${lab}: ${e.message}`); results[i] = []; }
+                        catch (e) {
+                            let got = null;   // AI failed on this batch: read its text with the local reader (no AI) instead of losing the questions
+                            if (b.type === 'text') { try { got = localMains(b.nums.map(n => pages[n - 1].text).join('\n')); if (only) got = got.filter(q => only.includes(parseInt(q.qNo, 10))); } catch (e2) { got = null; } }
+                            if (got && got.length) { results[i] = got; local.push(`${lab}: ${got.length} question(s) read without AI (${String(e.message).replace(/\s+/g, ' ').slice(0, 90)})`); }
+                            else { failed.push(`${lab}: ${e.message}`); results[i] = []; }
+                        }
                         done++; if (done < batches.length) mainsStatus(`${tag}${done}/${batches.length} batches done, about ${Math.round((Date.now() - t0) / 1000 / done * (batches.length - done))}s left`);
                     }
                 };
@@ -5716,8 +5721,29 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
             const miss = missingNos();
             if (merged.size && miss.length && miss.length <= 12) { mainsStatus('Looking again for missing Q' + miss.join(', Q')); await runPass(miss, 'Recheck: '); }
             const arr = [...merged.values()];
-            arr.failed = failed; arr.missing = missingNos(); return arr;
+            arr.failed = failed; arr.local = local; arr.missing = missingNos(); return arr;
         } finally { clearInterval(tick); exStart = 0; }
+    }
+    // Reads one batch of English page text WITHOUT any AI (used when Gemini blocks or fails on that batch).
+    // Works on a batch that starts in the middle of the paper: the first question number found can be any number.
+    function localMains(text) {
+        const lines = String(text).split('\n').map(l => l.replace(/\s+/g, ' ').trim()).filter(l => l && !/^\[?\s*P\.?\s*T\.?\s*O\.?\s*\]?$/i.test(l));
+        const blocks = []; let cur = null, lastN = 0;
+        for (const ln of lines) {
+            const m = ln.match(/^(?:Q\.?\s*)?(\d{1,2})\s*[.)]\s+(\S.*)$/i);
+            if (m) { const n = parseInt(m[1], 10); if (n === lastN + 1 || (!lastN && n <= 60)) { cur = { n: String(n), t: [m[2]] }; blocks.push(cur); lastN = n; continue; } }
+            if (cur) cur.t.push(ln);   // text before the first number is the tail of a question from the previous page: skipped
+        }
+        const out = [];
+        for (const b of blocks) {
+            let body = b.t.join(' ').replace(/\s+/g, ' ').trim(), words = null, marks = null, m, lastM = null;
+            const re = /\(\s*answer\s+in\s+(?:about\s+)?(\d{2,4})\s*words\s*\)\s*(\d{1,3}(?:\.\d)?)?/ig;
+            while ((m = re.exec(body))) lastM = m;
+            if (lastM) { words = Number(lastM[1]); if (lastM[2]) marks = Number(lastM[2]); body = body.slice(0, lastM.index); }
+            body = body.replace(/\(\s*answer\s+in\s+(?:about\s+)?\d{2,4}\s*words\s*\)\s*(?:\d{1,3}(?:\.\d)?)?/ig, ' ').replace(/\s+/g, ' ').trim();
+            if (body.length >= 10) out.push({ qNo: b.n, section: '', question: body, marks, words });
+        }
+        return out;
     }
     // basic offline reader for pasted text (used only if Gemini fails)
     function ruleParse(text) {
@@ -5788,7 +5814,11 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         pendingMeta.missing = missingB;
         if (!pending.length) { showPopup({ title: 'No questions found', type: 'error', html: '<div>No question could be found in what you gave. Check that the file or text is a Mains question paper.</div>' }); renderPreview(); return; }
         renderPreview();
-        if (failedB.length) showPopup({ title: 'Some pages could not be read', type: 'warn', html: `<div>${failedB.length} part(s) of the paper failed after trying all keys and models, so some questions may be missing:</div><div class="text-xs text-gray-400">${failedB.map(esc).join('<br>')}</div><div>Check the list below and use Extract again, or add the missing question by hand.</div>` });
+        const localB = arr.local || [];
+        if (failedB.length || localB.length) showPopup({ title: failedB.length ? 'Some pages could not be read' : 'Some pages were read without AI', type: 'warn', html:
+            (localB.length ? `<div>${localB.length} part(s) were blocked or failed on Gemini, so the site's basic reader read them (no AI). Please check each of those questions, its marks and its word limit:</div><div class="text-xs text-gray-400">${localB.map(esc).join('<br>')}</div>` : '') +
+            (failedB.length ? `<div>${failedB.length} part(s) of the paper failed after trying all keys and models, so some questions may be missing:</div><div class="text-xs text-gray-400">${failedB.map(esc).join('<br>')}</div>` : '') +
+            `<div>Check the list below and use Extract again, or add the missing question by hand.</div>` });
     };
 
     // ---------- preview + save ----------
