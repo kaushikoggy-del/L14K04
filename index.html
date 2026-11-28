@@ -4406,7 +4406,7 @@ function confirmSubmitCbt() {
               <button type="button" onclick="explExport()" class="text-gray-400 hover:underline">Export</button>
               <button type="button" onclick="document.getElementById('expl-import-input').click()" class="text-gray-400 hover:underline">Import</button>
             </span>
-            <div style="flex-basis:100%">${rangeLine()}</div>`;
+            ${(() => { const rl = rangeLine(); return rl ? `<div style="flex-basis:100%">${rl}</div>` : ''; })()}`;
         checkRangeDone();
     }
     // ----- 2014-2026 progress line (these are written FIRST, so Elimination logic can be started) -----
@@ -4427,8 +4427,7 @@ function confirmSubmitCbt() {
         const unv = r.n - r.usable;
         const vr = verifyStats();
         const vline = (verifyOn() || vr.fixed || vr.verified) ? `<div style="flex-basis:100%" class="text-emerald-300"><i class="fa-solid fa-shield-halved"></i> Verified with Gemini (2014-2026): <b>${vr.verified}</b> / ${vr.total} &middot; ${vr.total - vr.verified} left &middot; ${vr.fixed} corrected${vr.active ? ` &middot; <span class="text-sky-300">${vr.active} being checked right now</span>` : ''}</div>` : '';
-        return vline + `<span class="text-emerald-300"><i class="fa-solid fa-circle-check"></i> Done: all ${r.n} questions of 2014-2026 have explanations.</span> ` +
-            (unv ? `<span class="text-amber-300">${unv} of them are Unverified, so Elimination logic skips them until Gemini verifies them (press "Verify with Gemini"). ${r.usable} are ready for elimination now.</span>` : `<span class="text-gray-300">You can start the Elimination logic now.</span>`) +
+        return vline +
             (elimPaused && r.usable ? ` <button type="button" onclick="elimTogglePause()" class="ml-1 px-2 py-0.5 rounded border border-emerald-400/60 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30 font-semibold">Start Elimination logic</button>` : '');
     }
     function checkRangeDone() {
