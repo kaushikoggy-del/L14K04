@@ -489,7 +489,11 @@
 
         <!-- TAB 2: IMPORT & AI TAGGER (v3.3 Simplified Setup Bar) -->
         <section id="tab-import" class="hidden space-y-6 font-sans">
-            <div class="bg-card p-6 rounded-xl border border-gray-700/60 shadow-lg space-y-6">
+            <div class="flex gap-2 text-xs" id="import-mode-bar">
+                <button type="button" id="imp-mode-prelims" onclick="setImportMode('prelims')" class="px-3 py-1.5 rounded-lg border font-semibold bg-amber-600 text-white border-amber-400"><i class="fa-solid fa-list-check"></i> Prelims (MCQ)</button>
+                <button type="button" id="imp-mode-mains" onclick="setImportMode('mains')" class="px-3 py-1.5 rounded-lg border font-semibold border-gray-600 text-gray-300"><i class="fa-solid fa-pen-nib"></i> Mains (descriptive)</button>
+            </div>
+            <div id="prelims-import-card" class="bg-card p-6 rounded-xl border border-gray-700/60 shadow-lg space-y-6">
                 <div>
                     <h2 class="text-base font-bold text-gray-100 flex items-center gap-2">
                         <i class="fa-solid fa-wand-magic-sparkles text-amber-400"></i> Import & AI Multimodal Tagger
@@ -585,6 +589,50 @@
                         <!-- Dynamically Generated Preview Cards -->
                     </div>
                 </div>
+            </div>
+
+            <!-- MAINS PYQ UPLOAD -->
+            <div id="mains-import-card" class="hidden bg-card p-6 rounded-xl border border-gray-700/60 shadow-lg space-y-6">
+                <div>
+                    <h2 class="text-base font-bold text-gray-100 flex items-center gap-2"><i class="fa-solid fa-pen-nib text-violet-400"></i> Upload Mains PYQ</h2>
+                    <p class="text-xs text-gray-400 mt-1">Upload a Mains General Studies question paper (PDF, image, or pasted text). Gemini reads each question with its marks and word limit. You check them, then save. Analysis comes later.</p>
+                </div>
+                <div class="bg-black/30 p-4 rounded-xl border border-gray-700/80 space-y-3">
+                    <span class="text-xs font-bold text-violet-400 uppercase tracking-wider block">1. Year &amp; Paper</span>
+                    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-300 mb-1">Year *</label>
+                            <input type="number" id="mains-year" value="2024" min="1990" max="2035" class="w-full bg-black/40 border border-gray-600 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-violet-500">
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-300 mb-1">Paper *</label>
+                            <select id="mains-paper" class="w-full bg-black/40 border border-gray-600 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-violet-500">
+                                <option value="GS1">GS1 - History, Geography &amp; Society</option>
+                                <option value="GS2">GS2 - Polity, Governance, Social Justice &amp; IR</option>
+                                <option value="GS3">GS3 - Economy, Technology, Environment &amp; Security</option>
+                                <option value="GS4">GS4 - Ethics, Integrity &amp; Aptitude</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-xs font-semibold text-gray-300 mb-1">Questions in this paper (optional)</label>
+                            <input type="number" id="mains-expected" placeholder="e.g. 20" min="1" max="60" class="w-full bg-black/40 border border-gray-600 rounded-lg px-3 py-2 text-xs text-gray-100 focus:outline-none focus:border-violet-500">
+                            <p class="text-[10px] text-gray-500 mt-1">Used only to warn you if some question was missed.</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="space-y-2">
+                    <label class="block text-xs font-semibold text-gray-300">2. Upload PDF / Image OR Paste Question Paper Text</label>
+                    <div class="border-2 border-dashed border-gray-600 hover:border-violet-500 rounded-xl p-4 text-center bg-black/20 transition cursor-pointer relative">
+                        <input type="file" id="mains-file" accept="application/pdf,image/*" onchange="mainsFileSelected(event)" class="absolute inset-0 opacity-0 cursor-pointer w-full h-full">
+                        <i class="fa-solid fa-cloud-arrow-up text-2xl text-gray-400 mb-1"></i>
+                        <p class="text-xs font-medium text-gray-300" id="mains-file-label">Click or drop one paper's PDF / Image here</p>
+                    </div>
+                    <textarea id="mains-raw-text" rows="7" placeholder="Or paste the question paper text here..." class="w-full bg-black/40 border border-gray-600 rounded-xl p-3 text-xs text-gray-200 focus:outline-none focus:border-violet-500"></textarea>
+                </div>
+                <button type="button" id="btn-mains-extract" onclick="mainsExtract()" class="w-full py-3 bg-violet-600 hover:bg-violet-500 text-white rounded-xl font-bold text-xs shadow-lg transition flex items-center justify-center gap-2">
+                    <i class="fa-solid fa-microchip"></i> Extract Mains Questions
+                </button>
+                <div id="mains-preview" class="hidden space-y-4 pt-4 border-t border-gray-700"></div>
             </div>
         </section>
 
@@ -5048,7 +5096,13 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
         const qs = currentQs();
         const yrs = [...new Set(qs.map(q => Number(q.year)).filter(Boolean))].sort((a, b) => a - b);
         const sel = (id, label, opts, cur) => `<label class="flex items-center gap-1">${label} <select id="${id}" class="bg-black/30 border border-gray-600 rounded-lg px-2 py-1">${opts.map(([v, t]) => `<option value="${esc(v)}" ${String(v) === String(cur) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select></label>`;
-        let h = `<div class="flex gap-2 text-xs"><button type="button" data-view="pyq" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'pyq' ? 'bg-amber-600 text-white border-amber-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-chart-column"></i> PYQ Analysis</button><button type="button" data-view="perf" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'perf' ? 'bg-teal-600 text-white border-teal-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-user-check"></i> My Test Performance &amp; Priority</button></div>`;
+        let h = `<div class="flex gap-2 text-xs"><button type="button" data-view="pyq" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'pyq' ? 'bg-amber-600 text-white border-amber-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-chart-column"></i> PYQ Analysis</button><button type="button" data-view="perf" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'perf' ? 'bg-teal-600 text-white border-teal-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-user-check"></i> My Test Performance &amp; Priority</button><button type="button" data-view="mains" class="px-3 py-1.5 rounded-lg border font-semibold ${state.view === 'mains' ? 'bg-violet-600 text-white border-violet-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid fa-pen-nib"></i> Mains PYQ Analyser</button></div>`;
+        if (state.view === 'mains') {
+            root.innerHTML = h + '<div id="mains-root"></div>';
+            root.onclick = e => { const v = e.target.closest('[data-view]'); if (v) { state.view = v.dataset.view; renderInsights(); } };
+            if (window.mainsRender) window.mainsRender(root.querySelector('#mains-root'));
+            return;
+        }
         h += `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300">` +
             sel('ins-exam', 'Exam:', [['ALL', 'All exams'], ...realExams.map(e => [e, `${e} (${examCount[e]})`])], state.exam) +
             sel('ins-from', 'From year:', [['', 'Earliest'], ...allYears.map(y => [y, y])], state.from) +
@@ -5394,6 +5448,310 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
     }
     window.toggleSplitView = function () { try { localStorage.setItem('pyq_split', isOn() ? '0' : '1'); } catch (e) {} apply(); };
     document.addEventListener('DOMContentLoaded', () => { apply(); try { window.matchMedia('(min-width: 1024px)').addEventListener('change', reset); } catch (e) {} });
+})();
+</script>
+
+<script>
+// ===== MAINS PYQ: upload (Import tab) + question viewer (Insights > Mains PYQ Analyser) =====
+(function () {
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const PAPERS = [['GS1', 'GS1 - History, Geography & Society'], ['GS2', 'GS2 - Polity, Governance, Social Justice & IR'], ['GS3', 'GS3 - Economy, Technology, Environment & Security'], ['GS4', 'GS4 - Ethics, Integrity & Aptitude']];
+    const EXAM = 'UPSC CSE Mains';
+    let db = [], idb = null, loaded = false, mainsFile = null, pending = [], pendingMeta = null, liveModels = null;
+    const view = { year: 'ALL', paper: 'ALL', limit: 40, editing: null };
+
+    // ---------- storage (IndexedDB, so it does not eat the small localStorage quota) ----------
+    const openDb = () => new Promise((res, rej) => { const r = indexedDB.open('pyq_mains_v1', 1); r.onupgradeneeded = () => r.result.createObjectStore('q', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    async function load() {
+        try {
+            idb = await openDb();
+            db = await new Promise((res, rej) => { const rq = idb.transaction('q').objectStore('q').getAll(); rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error); });
+        } catch (e) { idb = null; db = []; console.warn('[mains] storage unavailable', e); }
+        try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
+        loaded = true; refresh();
+    }
+    const putMany = list => new Promise((res, rej) => {
+        if (!idb) return rej(new Error('Browser storage is not available in this browser mode (private window?).'));
+        const tx = idb.transaction('q', 'readwrite'), st = tx.objectStore('q'); list.forEach(q => st.put(q));
+        tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); tx.onabort = () => rej(tx.error || new Error('Save was cancelled'));
+    });
+    const delOne = id => new Promise((res, rej) => {
+        if (!idb) return rej(new Error('Browser storage is not available.'));
+        const tx = idb.transaction('q', 'readwrite'); tx.objectStore('q').delete(id); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error);
+    });
+    const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '');
+    const mkId = (year, paper, qNo) => `mains_${year}_${paper}_${slug(qNo)}`;
+    const qKey = q => { const m = String(q.qNo).match(/^(\d+)\s*([a-z]?)/i); return (m ? Number(m[1]) : 999) * 100 + (m && m[2] ? m[2].toLowerCase().charCodeAt(0) - 96 : 0); };
+    const sortQs = l => l.slice().sort((a, b) => b.year - a.year || String(a.paper).localeCompare(String(b.paper)) || qKey(a) - qKey(b));
+    const num = v => { const n = parseFloat(v); return isFinite(n) && n > 0 ? n : null; };
+
+    // ---------- Import tab: mode switch + file ----------
+    window.setImportMode = function (mode) {
+        const m = mode === 'mains';
+        const a = document.getElementById('prelims-import-card'), b = document.getElementById('mains-import-card');
+        if (a) a.classList.toggle('hidden', m); if (b) b.classList.toggle('hidden', !m);
+        const on = 'px-3 py-1.5 rounded-lg border font-semibold bg-amber-600 text-white border-amber-400', onM = 'px-3 py-1.5 rounded-lg border font-semibold bg-violet-600 text-white border-violet-400', off = 'px-3 py-1.5 rounded-lg border font-semibold border-gray-600 text-gray-300';
+        const p = document.getElementById('imp-mode-prelims'), q = document.getElementById('imp-mode-mains');
+        if (p) p.className = m ? off : on; if (q) q.className = m ? onM : off;
+    };
+    window.mainsFileSelected = function (e) {
+        const f = e.target.files && e.target.files[0]; if (!f) return;
+        mainsFile = f; const l = document.getElementById('mains-file-label'); if (l) l.textContent = `File Ready: ${f.name} (${(f.size / 1024).toFixed(1)} KB)`;
+    };
+
+    // ---------- extraction ----------
+    const fetchT = async (url, opt, ms) => { const c = new AbortController(), t = setTimeout(() => c.abort(), ms); try { return await fetch(url, { ...opt, signal: c.signal }); } finally { clearTimeout(t); } };
+    const toB64 = f => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = () => rej(new Error('Could not read the file')); r.readAsDataURL(f); });
+    function geminiKeys() { return String(localStorage.getItem('upsc_gemini_api_key') || '').split(/[\s,;]+/).map(k => k.trim()).filter(k => k.length > 10 && (k.startsWith('AIza') || k.startsWith('AQ.'))); }
+    async function getModels(key) {
+        if (liveModels && liveModels.length) return liveModels;
+        try {
+            const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`, {}, 15000), d = await r.json();
+            if (r.ok && Array.isArray(d.models)) {
+                const v = d.models.filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent')).map(m => m.name.replace(/^models\//, '')).filter(n => /flash/i.test(n) && !/tts|audio|image|robotics|computer|custom|embedding|aqa|exp/i.test(n));
+                v.sort((a, b) => ((/lite/i.test(a) ? 10 : 0) + (/latest/i.test(a) ? 0 : 5)) - ((/lite/i.test(b) ? 10 : 0) + (/latest/i.test(b) ? 0 : 5)));
+                if (v.length) { liveModels = v.slice(0, 3); return liveModels; }
+            }
+        } catch (e) {}
+        return ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+    }
+    function parseJsonArray(t) {
+        if (!t) return null;
+        const c = t.replace(/```json\s*/gi, '').replace(/```\s*/g, '').trim();
+        const a = c.indexOf('['), b = c.lastIndexOf(']'); if (a < 0 || b <= a) return null;
+        try { const r = JSON.parse(c.slice(a, b + 1)); return Array.isArray(r) ? r : null; } catch (e) { return null; }
+    }
+    async function geminiExtract(year, paper, raw, file) {
+        const keys = geminiKeys();
+        if (!keys.length) throw new Error('No Gemini key saved. Add one in Settings (the three-dot menu, API Key Vault).');
+        const label = (PAPERS.find(p => p[0] === paper) || [paper, paper])[1];
+        const prompt = `You are extracting questions from a UPSC Civil Services MAINS General Studies question paper (${year}, ${label}).
+Return ONLY a JSON array, nothing else. One element per question:
+{"qNo": "1", "question": "full question text", "marks": 10, "words": 150}
+Rules:
+- qNo is the question number exactly as printed (e.g. "1", "12", "3a"). If one numbered question has parts (a), (b) with their own marks, return each part as its own element with qNo like "3a", "3b".
+- question is the complete text exactly as printed. Join broken lines and fix line-break hyphenation. Do NOT paraphrase, summarise or invent anything. Do NOT put the marks or word limit inside the question text.
+- marks and words are numbers if printed (e.g. "(Answer in 150 words) 10" means words 150, marks 10), otherwise null.
+- GS4 case studies are questions too; keep the whole case-study text in question.
+- Ignore instructions, headers, footers, page numbers and section titles.`;
+        const parts = [{ text: prompt }];
+        if (file) parts.push({ inlineData: { mimeType: file.type || 'application/pdf', data: await toB64(file) } });
+        if (raw) parts.push({ text: 'QUESTION PAPER TEXT:\n' + raw });
+        const models = await getModels(keys[0]);
+        let last = '';
+        for (const key of keys) {
+            for (const m of models) {
+                try {
+                    const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`, {
+                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, maxOutputTokens: 16384, responseMimeType: 'application/json' } })
+                    }, 120000);
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok) { last = (d.error && d.error.message) || ('HTTP ' + r.status); if (r.status === 429 || r.status === 403) break; continue; }
+                    const txt = ((d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || []).map(p => p.text || '').join('');
+                    const arr = parseJsonArray(txt); if (arr) return arr;
+                    last = 'Gemini reply was not a valid list of questions';
+                } catch (e) { last = e.name === 'AbortError' ? 'Gemini took too long' : e.message; }
+            }
+        }
+        throw new Error(last || 'Gemini did not respond');
+    }
+    // basic offline reader for pasted text (used only if Gemini fails)
+    function ruleParse(text) {
+        const lines = String(text).split('\n'), blocks = []; let cur = [], lastN = 0;
+        for (const ln of lines) {
+            const m = ln.match(/^\s*(?:Q\.?\s*)?(\d{1,2})\s*[.)]\s+\S/i);
+            if (m) { const n = parseInt(m[1], 10); if (n === lastN + 1 || (lastN === 0 && n === 1)) { if (cur.length) blocks.push(cur.join('\n')); cur = [ln]; lastN = n; continue; } }
+            cur.push(ln);
+        }
+        if (cur.length) blocks.push(cur.join('\n'));
+        return blocks.filter(b => b.trim().length > 15).map((b, i) => {
+            const nm = b.match(/^\s*(?:Q\.?\s*)?(\d{1,2})\s*[.)]\s*/i); let body = b.replace(/^\s*(?:Q\.?\s*)?\d{1,2}\s*[.)]\s*/i, '').trim();
+            let words = null, marks = null, m;
+            if ((m = body.match(/\(?\s*(?:answer\s+in\s+)?(\d{2,3})\s*words\s*\)?/i))) { words = Number(m[1]); }
+            if ((m = body.match(/\(\s*(\d{1,2}(?:\.\d)?)\s*marks?\s*\)/i)) || (m = body.match(/words\s*\)?\s*[\(\[]?\s*(\d{1,2}(?:\.\d)?)\s*(?:marks?)?\s*[\)\]]?\s*$/i))) { marks = Number(m[1]); }
+            body = body.replace(/\(\s*answer\s+in\s+\d{2,3}\s*words\s*\)/ig, '').replace(/\(\s*\d{1,2}(?:\.\d)?\s*marks?\s*\)/ig, '').replace(/\s*\n\s*(\d{1,2}(?:\.\d)?)\s*$/, '').replace(/\s+/g, ' ').trim();
+            if (marks !== null) body = body.replace(new RegExp('\\s+' + marks + '\\s*(?:marks?)?\\s*$', 'i'), '').trim();
+            return { qNo: nm ? nm[1] : String(i + 1), question: body, marks, words };
+        });
+    }
+    function normalize(arr) {
+        const seen = new Set(), out = [];
+        arr.forEach((it, i) => {
+            const question = String(it && (it.question || it.text) || '').replace(/\s+\n/g, '\n').trim();
+            if (question.length < 10) return;
+            let qNo = String(it.qNo ?? it.number ?? (i + 1)).trim().replace(/^q\.?\s*/i, '') || String(i + 1);
+            let k = qNo, n = 2; while (seen.has(k.toLowerCase())) { k = qNo + '_' + n++; } seen.add(k.toLowerCase());
+            out.push({ qNo: k, question, marks: num(it.marks), words: num(it.words) });
+        });
+        return out;
+    }
+    window.mainsExtract = async function () {
+        const year = parseInt(document.getElementById('mains-year').value, 10), paper = document.getElementById('mains-paper').value;
+        const raw = document.getElementById('mains-raw-text').value.trim(), expected = parseInt(document.getElementById('mains-expected').value, 10) || null;
+        if (!year || year < 1990 || year > 2035) { showPopup({ title: 'Check the year', type: 'warn', html: '<div>Enter the exam year (for example 2023).</div>' }); return; }
+        if (!raw && !mainsFile) { showPopup({ title: 'Nothing to read', type: 'warn', html: '<div>Upload the question paper (PDF or image) or paste its text first.</div>' }); return; }
+        const btn = document.getElementById('btn-mains-extract'); btn.disabled = true; btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Reading the paper...';
+        let arr = null;
+        try { arr = await geminiExtract(year, paper, raw, mainsFile); }
+        catch (e) {
+            if (raw) { arr = ruleParse(raw); showPopup({ title: 'Gemini could not finish', type: 'warn', html: `<div><b>What happened:</b> ${esc(e.message)}</div><div>The site used its basic reader on the pasted text instead, so please check every question and its marks carefully.</div>` }); }
+            else showPopup({ title: 'Could not read the paper', type: 'error', html: `<div><b>What happened:</b> ${esc(e.message)}</div><div><b>What to do:</b> Try again in a minute, upload a clearer file, or paste the text instead.</div>` });
+        }
+        btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-microchip"></i> Extract Mains Questions';
+        if (!arr) return;
+        pending = normalize(arr); pendingMeta = { year, paper, expected };
+        if (!pending.length) { showPopup({ title: 'No questions found', type: 'error', html: '<div>No question could be found in what you gave. Check that the file or text is a Mains question paper.</div>' }); renderPreview(); return; }
+        renderPreview();
+    };
+
+    // ---------- preview + save ----------
+    function renderPreview() {
+        const box = document.getElementById('mains-preview'); if (!box) return;
+        if (!pending.length) { box.classList.add('hidden'); box.innerHTML = ''; return; }
+        const m = pendingMeta, willReplace = pending.filter(q => db.some(d => d.id === mkId(m.year, m.paper, q.qNo))).length;
+        const warn = m.expected && m.expected !== pending.length ? `<div class="rounded-lg border border-amber-500/40 bg-amber-900/10 px-3 py-2 text-xs text-amber-200">You said this paper has ${m.expected} questions but ${pending.length} were found. Check below whether something was missed (you can add a question by hand).</div>` : '';
+        box.classList.remove('hidden');
+        box.innerHTML = `<div class="flex flex-wrap items-center justify-between gap-2">
+                <h3 class="text-sm font-bold text-violet-400 flex items-center gap-2"><i class="fa-solid fa-list-check"></i> Check before saving: ${pending.length} questions &middot; ${m.year} &middot; ${esc(m.paper)}</h3>
+                <div class="flex gap-2"><button type="button" data-mact="add" class="px-3 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-plus"></i> Add question</button>
+                <button type="button" data-mact="discard" class="px-3 py-2 bg-red-950/60 hover:bg-red-900/80 border border-red-500/40 text-red-200 rounded-lg text-xs font-bold">Discard</button>
+                <button type="button" data-mact="save" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold shadow"><i class="fa-solid fa-floppy-disk"></i> Save ${pending.length} to Mains database</button></div></div>
+            ${willReplace ? `<div class="text-xs text-sky-300">${willReplace} of these already exist for ${m.year} ${esc(m.paper)} and will be replaced by the new text.</div>` : ''}${warn}
+            <div class="space-y-3 max-h-[560px] overflow-y-auto pr-2">${pending.map((q, i) => `<div class="bg-black/30 border border-gray-700/70 rounded-xl p-3 space-y-2">
+                <div class="flex flex-wrap items-center gap-2 text-xs">
+                    <label class="flex items-center gap-1 text-gray-400">Q <input data-mi="${i}" data-mf="qNo" value="${esc(q.qNo)}" class="w-16 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label>
+                    <label class="flex items-center gap-1 text-gray-400">Marks <input data-mi="${i}" data-mf="marks" type="number" value="${q.marks ?? ''}" class="w-16 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label>
+                    <label class="flex items-center gap-1 text-gray-400">Words <input data-mi="${i}" data-mf="words" type="number" value="${q.words ?? ''}" class="w-20 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label>
+                    <button type="button" data-mact="del" data-mi="${i}" class="ml-auto text-red-300 hover:text-red-200 px-2" title="Remove this question"><i class="fa-solid fa-trash"></i></button>
+                </div>
+                <textarea data-mi="${i}" data-mf="question" rows="4" class="w-full bg-black/40 border border-gray-600 rounded-lg p-2 text-sm text-gray-100 font-pyq-text focus:outline-none focus:border-violet-500">${esc(q.question)}</textarea></div>`).join('')}</div>`;
+    }
+    document.addEventListener('input', e => {
+        const t = e.target; if (!t.dataset || t.dataset.mi === undefined || !t.dataset.mf || !t.closest('#mains-preview')) return;
+        const q = pending[Number(t.dataset.mi)]; if (!q) return; const f = t.dataset.mf;
+        q[f] = (f === 'marks' || f === 'words') ? num(t.value) : t.value;
+    });
+    document.addEventListener('click', async e => {
+        const b = e.target.closest('#mains-preview [data-mact]'); if (!b) return;
+        const act = b.dataset.mact;
+        if (act === 'del') { pending.splice(Number(b.dataset.mi), 1); renderPreview(); }
+        else if (act === 'add') { const nums = pending.map(q => parseInt(q.qNo, 10)).filter(n => !isNaN(n)); pending.push({ qNo: String((nums.length ? Math.max(...nums) : 0) + 1), question: '', marks: null, words: null }); renderPreview(); const t = document.querySelectorAll('#mains-preview textarea'); if (t.length) t[t.length - 1].focus(); }
+        else if (act === 'discard') { pending = []; renderPreview(); }
+        else if (act === 'save') await save();
+    });
+    async function save() {
+        const m = pendingMeta, list = pending.filter(q => String(q.question).trim().length >= 10);
+        if (!list.length) { showPopup({ title: 'Nothing to save', type: 'warn', html: '<div>Every question is empty.</div>' }); return; }
+        const ids = new Set(); const dup = list.find(q => { const id = mkId(m.year, m.paper, q.qNo); if (ids.has(id)) return true; ids.add(id); return false; });
+        if (dup) { showPopup({ title: 'Two questions have the same number', type: 'warn', html: `<div>Question number <b>${esc(dup.qNo)}</b> is used twice. Give each question its own number, then save.</div>` }); return; }
+        const recs = list.map(q => { const id = mkId(m.year, m.paper, q.qNo), old = db.find(d => d.id === id); return { ...(old || {}), id, exam: EXAM, year: m.year, paper: m.paper, qNo: String(q.qNo).trim(), question: String(q.question).trim(), marks: q.marks, words: q.words, ts: Date.now() }; });
+        try { await putMany(recs); } catch (e) { showPopup({ title: 'Could not save', type: 'error', html: `<div>${esc(e.message)}</div>` }); return; }
+        const fresh = recs.filter(r => !db.some(d => d.id === r.id)).length;
+        recs.forEach(r => { const i = db.findIndex(d => d.id === r.id); if (i >= 0) db[i] = r; else db.push(r); });
+        pending = []; pendingMeta = null; mainsFile = null; renderPreview();
+        ['mains-raw-text'].forEach(id => { const x = document.getElementById(id); if (x) x.value = ''; });
+        const fl = document.getElementById('mains-file-label'); if (fl) fl.textContent = "Click or drop one paper's PDF / Image here"; const fi = document.getElementById('mains-file'); if (fi) fi.value = '';
+        showPopup({ title: 'Saved', type: 'ok', html: `<div>${fresh} new and ${recs.length - fresh} updated questions saved for ${m.year} ${esc(m.paper)}. Total Mains questions: <b>${db.length}</b>.</div><div class="text-xs text-gray-400">They are stored in this browser. Use Export in Insights &gt; Mains PYQ Analyser to keep a backup file.</div>` });
+        refresh();
+    }
+
+    // ---------- viewer (Insights > Mains PYQ Analyser) ----------
+    function refresh() { const r = document.getElementById('mains-root'); if (r) render(r); }
+    window.mainsRefresh = refresh;
+    window.mainsRender = function (el) { render(el); };
+    function chips(q) {
+        const c = (t, cls) => `<span class="px-2 py-0.5 rounded border ${cls}">${t}</span>`;
+        return c(esc(q.year), 'bg-violet-500/20 text-violet-300 border-violet-500/30 font-bold') + c(esc(q.paper), 'bg-gray-700/60 text-gray-200 border-gray-600') + c('Q' + esc(q.qNo), 'bg-gray-700/60 text-gray-200 border-gray-600') +
+            (q.marks ? c(esc(q.marks) + ' marks', 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20') : '') + (q.words ? c(esc(q.words) + ' words', 'bg-sky-500/10 text-sky-300 border-sky-500/20') : '');
+    }
+    function render(el) {
+        if (!el) return;
+        if (!loaded) { el.innerHTML = '<div class="text-xs text-gray-400 p-4">Loading Mains questions...</div>'; return; }
+        const years = [...new Set(db.map(q => q.year))].sort((a, b) => b - a);
+        if (view.year !== 'ALL' && !years.includes(Number(view.year))) view.year = 'ALL';
+        const inYear = db.filter(q => view.year === 'ALL' || q.year === Number(view.year));
+        const cnt = p => inYear.filter(q => q.paper === p).length;
+        const list = sortQs(inYear.filter(q => view.paper === 'ALL' || q.paper === view.paper));
+        const sel = 'bg-black/30 border border-gray-600 rounded-lg px-2 py-1';
+        let h = `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300 bg-card p-3 rounded-xl border border-gray-700/60">
+            <label class="flex items-center gap-1">Year <select id="mains-f-year" class="${sel}"><option value="ALL">All years</option>${years.map(y => `<option value="${y}" ${String(view.year) === String(y) ? 'selected' : ''}>${y}</option>`).join('')}</select></label>
+            <label class="flex items-center gap-1">Paper <select id="mains-f-paper" class="${sel}"><option value="ALL">All papers (${inYear.length})</option>${PAPERS.map(([k]) => `<option value="${k}" ${view.paper === k ? 'selected' : ''}>${k} (${cnt(k)})</option>`).join('')}</select></label>
+            <span><b class="text-violet-300">${list.length}</b> questions shown &middot; <b class="text-violet-300">${db.length}</b> saved in total</span>
+            <span class="ml-auto flex flex-wrap gap-3"><button type="button" data-mv="upload" class="text-violet-300 hover:underline"><i class="fa-solid fa-cloud-arrow-up"></i> Upload Mains PYQ</button>
+            <button type="button" data-mv="export" class="text-sky-300 hover:underline"><i class="fa-solid fa-download"></i> Export</button>
+            <button type="button" data-mv="import" class="text-sky-300 hover:underline"><i class="fa-solid fa-file-import"></i> Import</button>
+            <input type="file" id="mains-import-file" accept="application/json,.json" class="hidden"></span></div>`;
+        if (!db.length) {
+            h += `<div class="bg-card p-8 rounded-xl border border-gray-700/60 text-center space-y-3"><div class="text-sm text-gray-200">No Mains questions saved yet.</div><div class="text-xs text-gray-400">Upload a Mains question paper from Import &amp; AI Tagger, choosing the Mains (descriptive) option.</div>
+                <button type="button" data-mv="upload" class="px-4 py-2 bg-violet-600 hover:bg-violet-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-cloud-arrow-up"></i> Upload Mains PYQ</button></div>`;
+        } else {
+            h += `<div class="bg-card p-3 rounded-xl border border-gray-700/60 overflow-x-auto"><div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">What is uploaded (questions per year and paper) - click a number to filter</div>
+                <table class="text-xs"><thead><tr class="text-gray-400"><th class="pr-4 text-left font-normal">Year</th>${PAPERS.map(([k]) => `<th class="px-3 font-normal">${k}</th>`).join('')}</tr></thead><tbody>${years.map(y => `<tr class="border-t border-gray-700/40"><td class="pr-4 py-1 text-gray-200 font-semibold">${y}</td>${PAPERS.map(([k]) => { const n = db.filter(q => q.year === y && q.paper === k).length; return `<td class="px-3 text-center">${n ? `<button type="button" data-mv="cell" data-y="${y}" data-p="${k}" class="text-violet-300 hover:underline">${n}</button>` : '<span class="text-gray-600">-</span>'}</td>`; }).join('')}</tr>`).join('')}</tbody></table></div>`;
+            h += list.slice(0, view.limit).map(q => view.editing === q.id ? `<div class="bg-card p-4 rounded-xl border border-violet-500/50 space-y-2" data-id="${esc(q.id)}">
+                    <div class="flex flex-wrap items-center gap-2 text-xs font-sans">${chips(q)}</div>
+                    <div class="flex flex-wrap gap-2 text-xs text-gray-400 font-sans"><label>Q <input id="me-qno" value="${esc(q.qNo)}" class="w-16 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label>
+                    <label>Marks <input id="me-marks" type="number" value="${q.marks ?? ''}" class="w-16 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label>
+                    <label>Words <input id="me-words" type="number" value="${q.words ?? ''}" class="w-20 bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100"></label></div>
+                    <textarea id="me-text" rows="5" class="w-full bg-black/40 border border-gray-600 rounded-lg p-2 text-sm text-gray-100 font-pyq-text">${esc(q.question)}</textarea>
+                    <div class="flex gap-3 text-xs font-sans"><button type="button" data-mv="saveedit" data-id="${esc(q.id)}" class="px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-bold">Save</button><button type="button" data-mv="canceledit" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg font-bold">Cancel</button></div></div>`
+                : `<div class="bg-card p-4 rounded-xl border border-gray-700/60" data-id="${esc(q.id)}">
+                    <div class="flex flex-wrap items-center gap-2 text-[11px] font-sans mb-2">${chips(q)}<span class="ml-auto flex gap-3"><button type="button" data-mv="edit" data-id="${esc(q.id)}" class="text-sky-300 hover:underline">Edit</button><button type="button" data-mv="delete" data-id="${esc(q.id)}" class="text-red-300 hover:underline">Delete</button></span></div>
+                    <div class="font-pyq-text text-gray-100 whitespace-pre-line">${esc(q.question)}</div></div>`).join('');
+            if (list.length > view.limit) h += `<div class="text-center"><button type="button" data-mv="more" class="px-4 py-2 bg-slate-600 hover:bg-slate-500 text-white rounded-lg text-xs font-bold">Show more (${list.length - view.limit} left)</button></div>`;
+            if (!list.length) h += '<div class="text-xs text-gray-400 p-4">No questions for this year and paper.</div>';
+        }
+        el.innerHTML = h;
+        el.onchange = e => {
+            if (e.target.id === 'mains-f-year') { view.year = e.target.value; view.paper = 'ALL'; view.limit = 40; render(el); }
+            else if (e.target.id === 'mains-f-paper') { view.paper = e.target.value; view.limit = 40; render(el); }
+            else if (e.target.id === 'mains-import-file') importFile(e.target.files[0]);
+        };
+        el.onclick = onViewClick;
+    }
+    async function onViewClick(e) {
+        const b = e.target.closest('[data-mv]');
+        if (!b) return;
+        const a = b.dataset.mv, id = b.dataset.id;
+        if (a === 'upload') { switchTab('import'); setImportMode('mains'); }
+        else if (a === 'cell') { view.year = b.dataset.y; view.paper = b.dataset.p; view.limit = 40; refresh(); }
+        else if (a === 'more') { view.limit += 60; refresh(); }
+        else if (a === 'edit') { view.editing = id; refresh(); }
+        else if (a === 'canceledit') { view.editing = null; refresh(); }
+        else if (a === 'saveedit') {
+            const q = db.find(x => x.id === id); if (!q) return;
+            const text = document.getElementById('me-text').value.trim(); if (text.length < 10) { showPopup({ title: 'Question is empty', type: 'warn', html: '<div>Write the question text before saving.</div>' }); return; }
+            const qNo = document.getElementById('me-qno').value.trim() || q.qNo, nid = mkId(q.year, q.paper, qNo);
+            if (nid !== q.id && db.some(x => x.id === nid)) { showPopup({ title: 'Number already used', type: 'warn', html: `<div>Q${esc(qNo)} already exists for ${q.year} ${esc(q.paper)}.</div>` }); return; }
+            const nq = { ...q, id: nid, qNo, question: text, marks: num(document.getElementById('me-marks').value), words: num(document.getElementById('me-words').value), ts: Date.now() };
+            try { await putMany([nq]); if (nid !== q.id) await delOne(q.id); } catch (err) { showPopup({ title: 'Could not save', type: 'error', html: `<div>${esc(err.message)}</div>` }); return; }
+            db[db.findIndex(x => x.id === id)] = nq; view.editing = null; refresh();
+        }
+        else if (a === 'delete') {
+            const q = db.find(x => x.id === id); if (!q) return;
+            showPopup({ title: 'Delete this question?', type: 'warn', html: `<div>${esc(q.year)} ${esc(q.paper)} Q${esc(q.qNo)}: ${esc(q.question.slice(0, 140))}${q.question.length > 140 ? '...' : ''}</div><div class="flex gap-2"><button type="button" id="md-yes" class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold">Delete</button><button type="button" id="md-no" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
+                onOpen: (box, close) => { box.querySelector('#md-no').onclick = close; box.querySelector('#md-yes').onclick = async () => { try { await delOne(id); db = db.filter(x => x.id !== id); } catch (err) { showPopup({ title: 'Could not delete', type: 'error', html: `<div>${esc(err.message)}</div>` }); } close(); refresh(); }; } });
+        }
+        else if (a === 'export') {
+            const blob = new Blob([JSON.stringify(sortQs(db), null, 2)], { type: 'application/json' }), l = document.createElement('a');
+            l.href = URL.createObjectURL(blob); l.download = `UPSC_Mains_PYQ_Backup_${new Date().toISOString().slice(0, 10)}.json`; document.body.appendChild(l); l.click(); l.remove();
+        }
+        else if (a === 'import') { const f = document.getElementById('mains-import-file'); if (f) f.click(); }
+    }
+    async function importFile(file) {
+        if (!file) return;
+        try {
+            const arr = JSON.parse(await file.text());
+            if (!Array.isArray(arr)) throw new Error('This file is not a Mains backup (expected a list of questions).');
+            const recs = arr.filter(q => q && q.question && q.year && q.paper && q.qNo !== undefined).map(q => ({ ...q, id: mkId(q.year, q.paper, q.qNo), exam: EXAM, year: Number(q.year), qNo: String(q.qNo) }));
+            if (!recs.length) throw new Error('No valid questions found in the file.');
+            await putMany(recs);
+            recs.forEach(r => { const i = db.findIndex(d => d.id === r.id); if (i >= 0) db[i] = r; else db.push(r); });
+            showPopup({ title: 'Imported', type: 'ok', html: `<div>${recs.length} questions imported. Total Mains questions: <b>${db.length}</b>.</div>` });
+        } catch (e) { showPopup({ title: 'Could not import', type: 'error', html: `<div>${esc(e.message)}</div>` }); }
+        refresh();
+    }
+    load();
 })();
 </script>
 
