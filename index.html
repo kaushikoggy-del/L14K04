@@ -5525,9 +5525,25 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         const a = c.indexOf('['), b = c.lastIndexOf(']'); if (a < 0 || b <= a) return null;
         try { const r = JSON.parse(c.slice(a, b + 1)); return Array.isArray(r) ? r : null; } catch (e) { return null; }
     }
+    function mainsStatus(t) { const b = document.getElementById('btn-mains-extract'); if (b && b.disabled) b.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + t; }
+    // Reads the PDF's own text layer in the browser (fast) and removes Hindi (Devanagari) so only English goes to Gemini.
+    async function pdfEnglishText(file) {
+        if (!window.pdfjsLib || !(file.type === 'application/pdf' || /\.pdf$/i.test(file.name))) return null;
+        try {
+            const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise; let out = '';
+            for (let p = 1; p <= pdf.numPages; p++) {
+                const c = await (await pdf.getPage(p)).getTextContent(); let y = null, line = '';
+                for (const it of c.items) { const yy = Math.round(it.transform[5]); if (y !== null && Math.abs(yy - y) > 3) { out += line + '\n'; line = ''; } y = yy; line += it.str + (it.hasEOL ? '\n' : ''); }
+                out += line + '\n';
+            }
+            const clean = out.split('\n').filter(l => !(/[\u0900-\u097F]/.test(l) && (l.match(/[A-Za-z]/g) || []).length < 12)).map(l => l.replace(/[\u0900-\u097F\u200c\u200d]+/g, ' ').replace(/\s+/g, ' ').trim()).filter(l => /[A-Za-z0-9]/.test(l)).join('\n');   // Hindi lines (and Hindi-only remnants like "1. (150 ) 10") are dropped
+            return clean.replace(/\s+/g, '').length > pdf.numPages * 150 ? clean : null;   // too little text = scanned PDF, send the file instead
+        } catch (e) { return null; }
+    }
     async function geminiExtract(year, paper, raw, file) {
         const keys = geminiKeys();
         if (!keys.length) throw new Error('No Gemini key saved. Add one in Settings (the three-dot menu, API Key Vault).');
+        if (file && !raw) { mainsStatus('Reading PDF text...'); const t = await pdfEnglishText(file); if (t) { raw = t; file = null; } }
         const label = (PAPERS.find(p => p[0] === paper) || [paper, paper])[1];
         const prompt = `You are extracting questions from a UPSC Civil Services MAINS ${paper === 'ESSAY' ? 'Essay' : 'General Studies'} question paper (${year}, ${label}).
 Return ONLY a JSON array, nothing else. One element per question:
@@ -5544,9 +5560,13 @@ Rules:
         if (raw) parts.push({ text: 'QUESTION PAPER TEXT:\n' + raw });
         const models = await getModels(keys[0]);
         let last = '';
+        const t0 = Date.now(), how = file ? 'scanned file' : 'text'; let cur = '';
+        const tick = setInterval(() => mainsStatus(`Gemini is reading the ${how} (${cur}) - ${Math.round((Date.now() - t0) / 1000)}s`), 1000);
+        try {
         for (const key of keys) {
             for (const m of models) {
                 try {
+                    cur = m; mainsStatus(`Gemini is reading the ${how} (${m})...`);
                     const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`, {
                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, maxOutputTokens: 16384, responseMimeType: 'application/json' } })
@@ -5559,6 +5579,7 @@ Rules:
                 } catch (e) { last = e.name === 'AbortError' ? 'Gemini took too long' : e.message; }
             }
         }
+        } finally { clearInterval(tick); }
         throw new Error(last || 'Gemini did not respond');
     }
     // basic offline reader for pasted text (used only if Gemini fails)
