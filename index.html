@@ -4394,7 +4394,7 @@ function confirmSubmitCbt() {
         const paused = isPaused();
         const unv = pyqDatabase.filter(q => isUnverified(explMap[q.id])).length;
         el.innerHTML = `<span><i class="fa-solid fa-lightbulb text-sky-300"></i> Explanations ready: <b class="text-sky-300">${done}</b> / ${total}${unv ? ` &middot; <span class="text-amber-300">Unverified: <b>${unv}</b></span>` : ''}</span>
-            <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}</span>
+            <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}${(!paused && /busy|limit|quota/i.test(lastMsg) && strictOn()) ? ` <button type="button" onclick="explToggleStrict()" class="ml-2 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30 font-semibold">Turn Strict OFF - let Groq continue (unverified)</button>` : ''}</span>
             <span class="flex flex-wrap gap-3">
               <button type="button" onclick="explToggleVerify()" class="text-emerald-300 hover:underline">${verifyOn() ? 'Stop verifying' : 'Verify with Gemini'}${unv ? ' (' + unv + ')' : ''}</button>
               <button type="button" onclick="explToggleStrict()" class="text-emerald-300 hover:underline">Strict (search only): ${strictOn() ? 'ON' : 'OFF'}</button>
