@@ -4397,7 +4397,7 @@ function confirmSubmitCbt() {
             <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}${(!paused && /busy|limit|quota/i.test(lastMsg) && strictOn()) ? ` <button type="button" onclick="explToggleStrict()" class="ml-2 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30 font-semibold">Turn Strict OFF - let Groq continue (unverified)</button>` : ''}</span>
             <span class="flex flex-wrap gap-3">
               <button type="button" onclick="explToggleVerify()" class="text-emerald-300 hover:underline">${verifyOn() ? 'Stop verifying' : 'Verify with Gemini'}${unv ? ' (' + unv + ')' : ''}</button>
-              <button type="button" onclick="explToggleStrict()" class="text-emerald-300 hover:underline">Strict (search only): ${strictOn() ? 'ON' : 'OFF'}</button>
+              <button type="button" onclick="explToggleStrict()" title="Strict = explanations written only with Gemini web search" class="px-2 py-0.5 rounded border font-semibold ${strictOn() ? 'border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30' : 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30'}">${strictOn() ? 'Strict is ON - click to turn OFF' : 'Strict is OFF - click to turn ON'}</button>
               <button type="button" onclick="explToggleAlt()" class="text-amber-300 hover:underline">Groq fallback: ${altOff() ? 'OFF' : 'ON'}</button>
               <button type="button" onclick="explTogglePause()" class="text-sky-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button>
               <button type="button" onclick="explExport()" class="text-gray-400 hover:underline">Export</button>
