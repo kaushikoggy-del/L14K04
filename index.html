@@ -5557,11 +5557,13 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         const hasFile = parts.some(p => p.inlineData);
         const ok = a => a && !(a.length === 0 && expect);
         let last = 'All AI keys are busy or unavailable.';
+        const t0 = Date.now(); let recited = false;   // recited = Gemini's copyright filter blocked this text on two tries (it is about the text, not the key)
         if (gem.length) {
             const models = await getModels(gem[0]);
             for (let round = 0; round < 2; round++) {
                 const start = rr++;
                 for (let i = 0; i < gem.length; i++) {
+                    if (recited || Date.now() - t0 > 120000) break;   // blocked by the copyright filter, or this batch already used 2 minutes: go to the next provider
                     const key = gem[(start + i) % gem.length], kn = gem.indexOf(key) + 1;
                     if ((keyRest[key] || 0) > Date.now() && i < gem.length - 1) continue;   // this key is resting: use another one first
                     let skipKey = false;
@@ -5574,7 +5576,7 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
                                     r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`, {
                                         method: 'POST', headers: { 'Content-Type': 'application/json' },
                                         body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: temp, maxOutputTokens: 16384, responseMimeType: 'application/json' } })
-                                    }, 90000);
+                                    }, 60000);
                                     d = await r.json().catch(() => ({}));
                                     if (![500, 502, 503, 504].includes(r.status)) break;
                                     mainsStatus(`${label} - Gemini busy, retrying (${at + 1}/3)`); await sleep(2000 * (at + 1));
@@ -5590,14 +5592,19 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
                                 const arr = parseJsonArray(txt);
                                 if (ok(arr)) return arr;
                                 last = `Gemini key #${kn} (${m}): unusable reply` + (c && c.finishReason ? ` [${c.finishReason}]` : '');
+                                if (c && c.finishReason === 'RECITATION' && temp > 0) { recited = true; break; }   // blocked twice: other keys will give the same result
                                 if (!(c && c.finishReason === 'RECITATION')) break;   // only Gemini's copyright filter is worth retrying on the same model
-                            } catch (e) { last = `Gemini key #${kn} (${m}): ${e.name === 'AbortError' ? 'timed out (90s)' : e.message}`; break; }
+                            } catch (e) { last = `Gemini key #${kn} (${m}): ${e.name === 'AbortError' ? 'timed out (60s)' : e.message}`; break; }
                         }
-                        if (skipKey) break;
+                        if (skipKey || recited) break;
                     }
                 }
-                if (round === 0 && /429|quota|RESOURCE_EXHAUSTED|busy|503/i.test(last)) { mainsStatus(`${label} - waiting for quota...`); await sleep(12000); } else break;
+                if (round === 0 && !recited && Date.now() - t0 < 120000 && /429|quota|RESOURCE_EXHAUSTED|busy|503/i.test(last)) { mainsStatus(`${label} - waiting for quota...`); await sleep(12000); } else break;
             }
+        }
+        if (recited) {
+            last = 'Gemini blocked this part (its copyright filter stops it from copying a published paper). Add a free Groq key (starts with gsk_) in the API Key Vault so those parts can be read by Groq, or paste the text.';
+            if (!hasFile && (groq.length || or.length)) mainsStatus(`${label} - Gemini blocked this part, trying Groq/OpenRouter`);
         }
         if (!hasFile) {
             const oai = [{ role: 'user', content: parts.filter(p => p.text).map(p => ({ type: 'text', text: p.text })) }];
