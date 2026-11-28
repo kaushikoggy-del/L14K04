@@ -4307,12 +4307,12 @@ function confirmSubmitCbt() {
 // Explanations are prepared slowly in the background and stored in this browser (IndexedDB).
 // The "See Explanation" button only shows what is already saved - it never calls the AI.
 (function () {
-    const EXPL_DELAY_MS = 9000;          // pause between questions (keeps free limits safe)
+    const EXPL_DELAY_MS = 3000;          // pause between questions (keeps free limits safe)
     const MAX_BACKOFF_MS = 15 * 60 * 1000;
     window.explMap = {};
     let idb = null, timer = null, running = false, backoff = 0, keyIdx = 0, consecutiveErrors = 0;
     let modelCache = null, lastMsg = 'Starting soon...';
-    const skip = new Set(), priority = [], failCount = {};
+    const skip = new Set(), priority = [], failCount = {}, inflight = new Set();
     const isPaused = () => { try { return localStorage.getItem('expl_paused') === '1'; } catch (e) { return false; } };
     // An explanation is UNVERIFIED when it was written without web search (Groq / OpenRouter, or Gemini without search) and has not been checked by Gemini yet.
     // Unverified rule: everything written BEFORE the cutoff (no web search) stays Unverified. From the cutoff on, only explanations written by Groq / OpenRouter count as Unverified.
@@ -4538,7 +4538,7 @@ If reliable sources clearly disagree with the official key, add a last line star
         if (!keys.length && (geminiOnly || !getAltKeys().length)) throw new ExplErr(strictW ? 'Strict mode: add a Gemini key (web search is required)' : (altOff() ? 'No Gemini key (Groq fallback is OFF)' : 'No API key saved'), 'nokey');
         let last = null;
         for (let k = 0; k < keys.length; k++) {
-            const key = keys[(keyIdx + k) % keys.length];
+            const key = keys[(((opts && opts.start != null) ? opts.start : keyIdx) + k) % keys.length];
             const models = await getModels(key);
             for (const useSearch of ((opts && opts.noSearch) ? [false] : needSearch ? [true] : [true, false])) {
                 for (const model of models) {
@@ -4637,8 +4637,8 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
 
     // ----- Scheduler -----
     function nextTarget() {
-        while (priority.length) { const id = priority.shift(); const q = pyqDatabase.find(x => x.id === id); if (q) return q; }
-        const okq = q => !explMap[q.id] && !skip.has(q.id);
+        while (priority.length) { const id = priority.shift(); const q = pyqDatabase.find(x => x.id === id); if (q && !inflight.has(q.id)) return q; }
+        const okq = q => !explMap[q.id] && !skip.has(q.id) && !inflight.has(q.id);
         const inR = q => { const y = Number(q.year); return y >= 2014 && y <= 2026 && /^[A-D]$/i.test(String(q.officialKey || '')); };
         return pyqDatabase.find(q => okq(q) && inR(q)) || pyqDatabase.find(okq);
     }
@@ -4670,33 +4670,42 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
                 }
                 return;
             }
-            const q = nextTarget();
-            if (!q) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
-            lastMsg = `Writing explanation... (${q.exam} ${q.year})`; updateBar();
-            try {
-                const out = await limited(q);
-                await putExpl({ id: q.id, text: out.text, sources: out.sources, grounded: out.grounded, model: out.model, provider: out.provider || 'gemini', needsVerify: out.grounded === false, ts: Date.now() });
-                renderPanel(q.id); backoff = 0; consecutiveErrors = 0;
-                lastMsg = 'Working in the background'; updateBar();
-            } catch (e) {
-                consecutiveErrors++;
+            const lanes = Math.min(3, Math.max(1, getKeys().length));          // write several explanations at once (each on a different key)
+            const batch = [];
+            for (let i = 0; i < lanes; i++) { const t = nextTarget(); if (!t) break; inflight.add(t.id); batch.push(t); }
+            if (!batch.length) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
+            lastMsg = batch.length > 1 ? `Writing ${batch.length} explanations at once... (${batch[0].exam} ${batch[0].year})` : `Writing explanation... (${batch[0].exam} ${batch[0].year})`; updateBar();
+            const results = await Promise.all(batch.map(async q => {
+                try {
+                    const out = await limited(q);
+                    await putExpl({ id: q.id, text: out.text, sources: out.sources, grounded: out.grounded, model: out.model, provider: out.provider || 'gemini', needsVerify: out.grounded === false, ts: Date.now() });
+                    renderPanel(q.id); return { ok: true };
+                } catch (e) { return { ok: false, e, q }; }
+                finally { inflight.delete(q.id); }
+            }));
+            const bad = results.filter(r => !r.ok);
+            if (!bad.length) { backoff = 0; consecutiveErrors = 0; lastMsg = 'Working in the background'; updateBar(); delay = EXPL_DELAY_MS; }
+            else {
+                const e = bad[0].e; consecutiveErrors++;
                 if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 110)})`; }
                 else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check your keys in Settings'; }
-                else { failCount[q.id] = (failCount[q.id] || 0) + 1; if (failCount[q.id] >= 3) skip.add(q.id); lastMsg = 'Last try failed (' + explainError(e.message).why + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
+                else { bad.forEach(r => { failCount[r.q.id] = (failCount[r.q.id] || 0) + 1; if (failCount[r.q.id] >= 3) skip.add(r.q.id); }); lastMsg = 'Last try failed (' + explainError(e.message).why + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
                 console.warn('[explanations]', e.message);
                 updateBar();
             }
         } finally { running = false; kick(delay); }
     }
     // One shared queue for explanation + elimination writers: never two requests at once, and a shared cool-down when Google says "busy"
-    let nextOk = 0, chain = Promise.resolve();
+    let nextStart = 0, coolUntil = 0, rrKey = 0;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
     function limited(q, opts) {
-        const run = async () => {
-            const wait = nextOk - Date.now(); if (wait > 0) await new Promise(r => setTimeout(r, wait));
-            try { const out = await generateFor(q, opts); nextOk = Date.now() + 6000; return out; }
-            catch (e) { nextOk = Date.now() + ((e.kind === 'quota' || e.kind === 'busy') ? 65000 : 6000); throw e; }
-        };
-        const pr = chain.then(run, run); chain = pr.catch(() => {}); return pr;
+        return (async () => {
+            const now = Date.now(), startAt = Math.max(now, nextStart, coolUntil);
+            nextStart = startAt + 2500;                       // requests start at least 2.5 s apart, but can overlap (parallel lanes)
+            if (startAt > now) await sleep(startAt - now);
+            try { return await generateFor(q, { ...(opts || {}), start: rrKey++ }); }
+            catch (e) { if (e.kind === 'quota' || e.kind === 'busy') coolUntil = Math.max(coolUntil, Date.now() + 65000); throw e; }
+        })();
     }
     window.aiGenerate = limited;
     window.aiHasKeys = () => getKeys().length > 0 || getAltKeys().length > 0;
@@ -5048,7 +5057,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
 <script>
 // ===== OPTION ELIMINATION LOGIC WRITER (2014-2026 PYQs) =====
 (function () {
-    const FROM_YEAR = 2014, TO_YEAR = 2026, DELAY_MS = 7000, MAX_BACKOFF = 15 * 60 * 1000;
+    const FROM_YEAR = 2014, TO_YEAR = 2026, DELAY_MS = 4000, MAX_BACKOFF = 15 * 60 * 1000;
     window.elimMap = {};
     let idb = null, timer = null, running = false, backoff = 0, errs = 0, lastMsg = 'Starting soon...';
     const skip = new Set(), fails = {};
