@@ -5895,7 +5895,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
     function render(el) {
         if (!el) return;
         if (!loaded) { el.innerHTML = '<div class="text-xs text-gray-400 p-4">Loading Mains questions...</div>'; return; }
-        const years = [...new Set(db.map(q => q.year))].sort((a, b) => b - a);
+        const top = Math.max(new Date().getFullYear(), ...db.map(q => q.year)), years = [...new Set([...db.map(q => q.year), ...Array.from({ length: top - 2013 + 1 }, (_, i) => 2013 + i)])].sort((a, b) => b - a);   // every year from 2013 is listed, also the ones with nothing uploaded yet
         if (view.year !== 'ALL' && !years.includes(Number(view.year))) view.year = 'ALL';
         const inYear = db.filter(q => view.year === 'ALL' || q.year === Number(view.year));
         const cnt = p => inYear.filter(q => q.paper === p).length;
