@@ -5997,7 +5997,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         } catch (e) { showPopup({ title: 'Could not import', type: 'error', html: `<div>${esc(e.message)}</div>` }); }
         refresh();
     }
-    window.mainsApi = { all: () => db, PAPERS, isLoaded: () => loaded, put: async list => { await putMany(list); list.forEach(r => { const i = db.findIndex(d => d.id === r.id); if (i >= 0) db[i] = r; else db.push(r); }); } };
+    window.mainsApi = { callBatch, all: () => db, PAPERS, isLoaded: () => loaded, put: async list => { await putMany(list); list.forEach(r => { const i = db.findIndex(d => d.id === r.id); if (i >= 0) db[i] = r; else db.push(r); }); } };
     load();
 })();
 </script>
@@ -6038,6 +6038,9 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         if (a < 0 || b <= a) throw new Error('The AI did not return the expected list.');
         return JSON.parse(text.slice(a, b + 1).replace(/,\s*([\]}])/g, '$1'));
     }
+    // Same engine as the Mains uploader (key rotation, 35 s timeout, JSON mode, Groq/OpenRouter failover). Returns a parsed JSON array.
+    const aiArr = prompt => { const f = api() && api().callBatch; if (!f) return Promise.reject(new Error('The Mains engine is not ready yet. Reload the page.')); return f([{ text: prompt }], 'Mains analysis', true); };
+    const isLimit = e => e && (e.kind === 'quota' || e.kind === 'busy' || /429|quota|RESOURCE_EXHAUSTED|busy|503|resting|rate limit/i.test(String(e.message || '')));
     const ai = (prompt, maxTokens) => window.aiGenerate({ id: 'mains_tool', exam: 'Mains', year: '' }, { prompt, noSearch: true, maxTokens: maxTokens || 8192 });
     const pop = o => (window.showPopup || (() => {}))(o);
     function askYes(title, html, label, onYes) {
@@ -6229,14 +6232,13 @@ Rules:
 - A topic is one short syllabus item (2-8 words), for example "Federalism and Centre-State relations", "Role of Governor", "Urbanisation".
 - 4 to 30 topics per subject. Keep the syllabus wording where possible.
 - Do not repeat the same topic in two subjects.
-Reply ONLY with JSON: {"subjects":[{"name":"...","topics":["...","..."]}]}
+Reply ONLY with a JSON array: [{"name":"...","topics":["...","..."]}]
 
 SYLLABUS:
 ${raw.slice(0, 12000)}`;
         try {
-            const out = await ai(prompt, 8192);
-            const d = jsonFrom(out.text, '{', '}');
-            const subjects = (d.subjects || []).filter(s => s && s.name && Array.isArray(s.topics)).map(s => ({ name: String(s.name).trim(), nature: (syl[p].subjects.find(o => norm(o.name) === norm(s.name)) || {}).nature || 'mixed', topics: s.topics.map(t => String(t).trim()).filter(Boolean) }));
+            const d = await aiArr(prompt);
+            const subjects = (Array.isArray(d) ? d : (d.subjects || [])).filter(s => s && s.name && Array.isArray(s.topics)).map(s => ({ name: String(s.name).trim(), nature: (syl[p].subjects.find(o => norm(o.name) === norm(s.name)) || {}).nature || 'mixed', topics: s.topics.map(t => String(t).trim()).filter(Boolean) }));
             if (!subjects.length) throw new Error('The AI returned no subjects.');
             syl[p].subjects = subjects; saveJ(LS_SYL, syl); ui.busy = '';
             pop({ title: 'Syllabus split', type: 'ok', html: `<div>${subjects.length} subjects and ${subjects.reduce((n, s) => n + s.topics.length, 0)} topics created for ${esc(p)}.</div><div class="text-xs text-gray-400">Now mark each subject as Static / Mixed / Dynamic. You can rename subjects and edit topics (one per line) any time.</div>` });
@@ -6315,8 +6317,7 @@ List 6 to 8 OTHER angles of this theme that could come in the Essay paper and ar
 - hook: for a contemporary angle, a real recent example, report or event you are SURE about (one short phrase); otherwise a thinker, book or historical example worth using; if unsure, an empty string. Never invent anything.
 Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"abstract","hook":""}]`;
         try {
-            const out = await ai(prompt, 4096);
-            const items = jsonFrom(out.text, '[', ']').filter(i => i && i.dimension).slice(0, 10).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: i.kind === 'ca' ? 'ca' : 'abstract', hook: String(i.hook || '') }));
+            const items = (await aiArr(prompt)).filter(i => i && i.dimension).slice(0, 10).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: i.kind === 'ca' ? 'ca' : 'abstract', hook: String(i.hook || '') }));
             if (!items.length) throw new Error('No angles returned.');
             sug[key] = { items, ts: Date.now() }; saveJ(LS_SUG, sug);
         } catch (e) { pop({ title: 'Could not get suggestions', type: 'error', html: `<div>${esc(errText(e))}</div>` }); }
@@ -6343,7 +6344,8 @@ Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"abstract","hook"
         const BATCH = 8, batches = []; for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
         const catalog = subs.map((s, i) => `${i + 1}. ${s.name} (${s.nature}): ${s.topics.join(' | ')}`).join('\n');
         ui.tagging = true; ui.stop = false; ui.note = ''; let done = 0, fail = 0, tries = new Map(); refresh();
-        const upd = () => { ui.progress = `Tagged ${done} / ${todo.length}${fail ? ' - failed ' + fail : ''}${ui.stop ? ' - stopping...' : ui.note ? ' - ' + ui.note : ''}`; if (ui.tab === 'analysis' && ui.paper === p) refresh(); };
+        const upd = () => { ui.progress = `Tagged ${done} / ${todo.length}${fail ? ' - failed ' + fail : ''}${ui.stop ? ' - stopping...' : ui.note ? ' - ' + ui.note : ' - working (last answer ' + Math.round((Date.now() - lastOk) / 1000) + ' s ago)'}`; if (ui.tab === 'analysis' && ui.paper === p) refresh(); };
+        let lastOk = Date.now(); const tick = setInterval(() => { if (ui.tagging) upd(); }, 4000);
         const queue = batches.slice(); upd();
         const worker = async () => {
             while (queue.length && !ui.stop) {
@@ -6364,8 +6366,7 @@ ${bt.map((q, i) => `[${i + 1}] (${q.year}${q.marks ? ', ' + q.marks + ' marks' :
 
 Reply ONLY with a JSON array: [{"n":1,"subject":"","topic":"","dimension":"","type":"static","directive":""}]`;
                 try {
-                    const out = await ai(prompt, 8192);
-                    const arr = jsonFrom(out.text, '[', ']'), recs = [];
+                    const arr = await aiArr(prompt), recs = [];
                     arr.forEach(r => {
                         const q = bt[Number(r.n) - 1]; if (!q) return;
                         if (p === 'ESSAY') { const th = matchName(ESSAY_THEMES, r.theme || r.subject) || 'Unmatched'; recs.push({ ...q, tag: { subject: th, topic: '', dimension: String(r.angle || r.dimension || '').trim(), kind: /top|contem|curr/i.test(String(r.kind || '')) ? 'topical' : 'abstract', by: 'ai', ts: Date.now() } }); return; }
@@ -6375,22 +6376,22 @@ Reply ONLY with a JSON array: [{"n":1,"subject":"","topic":"","dimension":"","ty
                         recs.push({ ...q, tag: { subject: sb ? sb.name : String(r.subject || '').trim(), topic, dimension: String(r.dimension || '').trim(), qtype: qt, directive: String(r.directive || '').trim().toLowerCase(), by: 'ai', ts: Date.now() } });
                     });
                     if (!recs.length) throw new Error('Empty tag list');
-                    await api().put(recs); done += recs.length; ui.note = ''; upd();
+                    await api().put(recs); done += recs.length; ui.note = ''; lastOk = Date.now(); upd();
                 } catch (e) {
-                    const limit = e.kind === 'quota' || e.kind === 'busy';
+                    const limit = isLimit(e);
                     const n = (tries.get(bt) || 0) + (limit ? 0 : 1); tries.set(bt, n);   // waiting for a resting key is not a failure
                     if (n < 4 && !ui.stop) {
                         queue.push(bt);
-                        const w = limit ? Math.max(10000, Math.min(e.retryMs || 15000, 60000)) : 3000;
-                        ui.note = limit ? `waiting - all keys are resting after their limit (next one in about ${Math.ceil(w / 1000)} s). Other writers (explanations / verify) use the same keys` : 'retrying (' + errText(e).slice(0, 90) + ')';
+                        const w = limit ? Math.max(15000, Math.min(e.retryMs || 30000, 60000)) : 3000;
+                        ui.note = limit ? `waiting for a free key (about ${Math.ceil(w / 1000)} s). Explanations / Verify use the same keys` : 'retrying (' + String(e.message || e).slice(0, 110) + ')';
                         upd(); await sleep(w);
                     }
-                    else { fail += bt.length; ui.note = errText(e).slice(0, 110); upd(); console.warn('[mains tag]', e.message); }
+                    else { fail += bt.length; ui.note = String(e.message || e).slice(0, 140); upd(); console.warn('[mains tag]', e.message); }
                 }
             }
         };
         await Promise.all(Array.from({ length: Math.min(6, batches.length) }, worker));
-        ui.tagging = false; const stopped = ui.stop; ui.stop = false;
+        clearInterval(tick); ui.tagging = false; const stopped = ui.stop; ui.stop = false;
         ui.progress = `${stopped ? 'Stopped' : 'Done'}: ${done} tagged${fail ? ', ' + fail + ' failed (press Tag again to retry)' : ''}`; refresh();
     }
 
@@ -6427,8 +6428,7 @@ List 6 to 10 OTHER dimensions of this topic that the student should still prepar
 - hook: ${sb.nature === 'static' ? 'always an empty string' : 'only if kind is "ca": a real recent event, report or judgment you are SURE about (one short phrase), otherwise an empty string. Never invent anything.'}
 Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"static","hook":""}]`;
         try {
-            const out = await ai(prompt, 4096);
-            const items = jsonFrom(out.text, '[', ']').filter(i => i && i.dimension).slice(0, 12).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: (sb.nature !== 'static' && i.kind === 'ca') ? 'ca' : 'static', hook: sb.nature === 'static' ? '' : String(i.hook || '') }));
+            const items = (await aiArr(prompt)).filter(i => i && i.dimension).slice(0, 12).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: (sb.nature !== 'static' && i.kind === 'ca') ? 'ca' : 'static', hook: sb.nature === 'static' ? '' : String(i.hook || '') }));
             if (!items.length) throw new Error('No dimensions returned.');
             sug[key] = { items, ts: Date.now() }; saveJ(LS_SUG, sug);
         } catch (e) { pop({ title: 'Could not get suggestions', type: 'error', html: `<div>${esc(errText(e))}</div>` }); }
