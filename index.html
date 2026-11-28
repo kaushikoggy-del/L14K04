@@ -4395,7 +4395,7 @@ function confirmSubmitCbt() {
         const el = document.getElementById('expl-status-bar'); if (!el) return;
         const total = pyqDatabase.length, done = pyqDatabase.filter(q => explMap[q.id]).length;
         const paused = isPaused();
-        const unv = pyqDatabase.filter(q => isUnverified(explMap[q.id])).length;
+        const unv = pyqDatabase.filter(q => Number(q.year) >= 2014 && Number(q.year) <= 2026 && isUnverified(explMap[q.id])).length;
         el.innerHTML = `<span><i class="fa-solid fa-lightbulb text-sky-300"></i> Explanations ready: <b class="text-sky-300">${done}</b> / ${total}${unv ? ` &middot; <span class="text-amber-300">Unverified: <b>${unv}</b></span>` : ''}</span>
             <span class="text-gray-500">${esc(paused ? 'Paused' : lastMsg)}${(!paused && /busy|limit|quota/i.test(lastMsg) && strictOn()) ? ` <button type="button" onclick="explToggleStrict()" class="ml-2 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30 font-semibold">Turn Strict OFF - let Groq continue (unverified)</button>` : ''}</span>
             <span class="flex flex-wrap gap-3">
@@ -4641,7 +4641,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
     function nextVerifyTarget() {
         while (verifyPrio.length) { const id = verifyPrio.shift(); const q = pyqDatabase.find(x => x.id === id); if (q && isUnverified(explMap[id]) && !inflight.has(id)) return q; }
         if (!verifyOn()) return null;
-        return pyqDatabase.find(q => isUnverified(explMap[q.id]) && !vskip.has(q.id) && !inflight.has(q.id)) || null;
+        return pyqDatabase.find(q => { const y = Number(q.year); return y >= 2014 && y <= 2026 && isUnverified(explMap[q.id]) && !vskip.has(q.id) && !inflight.has(q.id); }) || null;   // only 2014-2026
     }
 
     // ----- Scheduler -----
