@@ -4531,24 +4531,33 @@ If reliable sources clearly disagree with the official key, add a last line star
         ((c.groundingMetadata && c.groundingMetadata.groundingChunks) || []).forEach(g => { if (g.web && g.web.uri && !seen.has(g.web.uri)) { seen.add(g.web.uri); sources.push({ uri: g.web.uri, title: g.web.title || '' }); } });
         return { text, sources: sources.slice(0, 6), grounded: useSearch };
     }
+    const keyCool = {}, keyQFails = {};
+    const minCoolLeft = keys => { const now = Date.now(); const left = keys.map(k => (keyCool[k] || 0) - now).filter(x => x > 0); return left.length ? Math.min(...left) : 0; };
+    const availGeminiKeys = () => getKeys().filter(k => !((keyCool[k] || 0) > Date.now())).length;
     async function generateFor(q, opts) {
         const keys = getKeys();
         const strictW = strictOn() && !(opts && opts.noSearch);                 // strict mode applies to explanations, not to elimination logic
         const geminiOnly = !!(opts && opts.geminiOnly) || strictW, needSearch = !!(opts && opts.requireSearch) || strictW;
         if (!keys.length && (geminiOnly || !getAltKeys().length)) throw new ExplErr(strictW ? 'Strict mode: add a Gemini key (web search is required)' : (altOff() ? 'No Gemini key (Groq fallback is OFF)' : 'No API key saved'), 'nokey');
         let last = null;
-        for (let k = 0; k < keys.length; k++) {
-            const key = keys[(((opts && opts.start != null) ? opts.start : keyIdx) + k) % keys.length];
+        const startAt = (opts && opts.start != null) ? opts.start : keyIdx;
+        const avail = keys.filter(k => !((keyCool[k] || 0) > Date.now()));   // keys that are resting after a quota error are skipped
+        const off = avail.length ? startAt % avail.length : 0;
+        const order = avail.map((_, i) => avail[(off + i) % avail.length]);
+        if (!order.length && keys.length) { last = new ExplErr('All Gemini keys are resting after reaching their limit', 'quota'); last.retryMs = Math.max(10000, minCoolLeft(keys)); }
+        for (let k = 0; k < order.length; k++) {
+            const key = order[k]; let hitQuota = false;
             const models = await getModels(key);
             for (const useSearch of ((opts && opts.noSearch) ? [false] : needSearch ? [true] : [true, false])) {
                 for (const model of models) {
-                    try { const out = await callOnce(key, model, q, useSearch, opts); keyIdx = (keyIdx + k) % keys.length; out.model = model; out.provider = 'gemini'; return out; }
-                    catch (e) { last = e; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
+                    try { const out = await callOnce(key, model, q, useSearch, opts); keyQFails[key] = 0; out.model = model; out.provider = 'gemini'; return out; }
+                    catch (e) { last = e; if (e.kind === 'quota') hitQuota = true; if (e.kind === 'quota' || e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
                 }
                 if (last && last.kind === 'key') break;
             }
+            if (hitQuota) { keyQFails[key] = (keyQFails[key] || 0) + 1; keyCool[key] = Date.now() + Math.min(3600000, 60000 * Math.pow(2, keyQFails[key] - 1)); }   // rest this key 1, 2, 4... min (max 1 h), then use the next key
         }
-        if (last && last.kind === 'quota') keyIdx = (keyIdx + 1) % keys.length;
+        if (last && last.kind === 'quota' && !last.retryMs) last.retryMs = Math.max(10000, minCoolLeft(keys));
         // All Gemini keys are exhausted / busy: try Groq and OpenRouter keys (no web search, so no sources)
         if (geminiOnly) throw last || new ExplErr('Unknown error', 'other');
         const alt = getAltKeys();
@@ -4670,7 +4679,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
                 }
                 return;
             }
-            const lanes = Math.min(3, Math.max(1, getKeys().length));          // write several explanations at once (each on a different key)
+            const lanes = Math.min(10, Math.max(1, availGeminiKeys()));          // write up to 10 explanations at once, each on a different (non-resting) key
             const batch = [];
             for (let i = 0; i < lanes; i++) { const t = nextTarget(); if (!t) break; inflight.add(t.id); batch.push(t); }
             if (!batch.length) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
@@ -4687,7 +4696,8 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
             if (!bad.length) { backoff = 0; consecutiveErrors = 0; lastMsg = 'Working in the background'; updateBar(); delay = EXPL_DELAY_MS; }
             else {
                 const e = bad[0].e; consecutiveErrors++;
-                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 110)})`; }
+                if ((e.kind === 'quota' || e.kind === 'busy') && e.retryMs) { delay = Math.max(10000, Math.min(e.retryMs, 3600000)); lastMsg = `Keys resting after their limit - next key is back in ${Math.ceil(delay / 1000)} s (${availGeminiKeys()} of ${getKeys().length} keys ready)`; }
+                else if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF_MS, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 110)})`; }
                 else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check your keys in Settings'; }
                 else { bad.forEach(r => { failCount[r.q.id] = (failCount[r.q.id] || 0) + 1; if (failCount[r.q.id] >= 3) skip.add(r.q.id); }); lastMsg = 'Last try failed (' + explainError(e.message).why + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
                 console.warn('[explanations]', e.message);
@@ -4701,10 +4711,10 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
     function limited(q, opts) {
         return (async () => {
             const now = Date.now(), startAt = Math.max(now, nextStart, coolUntil);
-            nextStart = startAt + 2500;                       // requests start at least 2.5 s apart, but can overlap (parallel lanes)
+            nextStart = startAt + 1000;                       // requests start at least 1 s apart, but can overlap (parallel lanes)
             if (startAt > now) await sleep(startAt - now);
             try { return await generateFor(q, { ...(opts || {}), start: rrKey++ }); }
-            catch (e) { if (e.kind === 'quota' || e.kind === 'busy') coolUntil = Math.max(coolUntil, Date.now() + 65000); throw e; }
+            catch (e) { if ((e.kind === 'quota' || e.kind === 'busy') && !e.retryMs) coolUntil = Math.max(coolUntil, Date.now() + 65000); throw e; }
         })();
     }
     window.aiGenerate = limited;
@@ -5206,7 +5216,8 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
                 refreshBox(q.id); backoff = 0; errs = 0; lastMsg = 'Working in the background';
             } catch (e) {
                 errs++;
-                if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 90)})`; }
+                if ((e.kind === 'quota' || e.kind === 'busy') && e.retryMs) { delay = Math.max(10000, Math.min(e.retryMs, 3600000)); lastMsg = `Keys resting after their limit - retrying in ${Math.ceil(delay / 1000)} s`; }
+                else if (e.kind === 'quota' || e.kind === 'busy') { backoff = Math.min(MAX_BACKOFF, backoff ? backoff * 2 : 60000); delay = backoff; lastMsg = `Gemini is busy / limit reached - retrying in ${Math.round(backoff / 60000)} min (${String(e.message).replace(/\s+/g, ' ').slice(0, 90)})`; }
                 else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check Settings'; }
                 else { fails[q.id] = (fails[q.id] || 0) + 1; if (fails[q.id] >= 3) skip.add(q.id); lastMsg = 'Last try failed: ' + String(e.message).slice(0, 80); if (errs >= 8) { delay = 10 * 60000; errs = 0; } }
                 console.warn('[elimination]', e.message);
