@@ -5642,16 +5642,15 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         const label = (PAPERS.find(p => p[0] === paper) || [paper, paper])[1];
         const prompt = (batched, only) => `You are extracting questions from a UPSC Civil Services MAINS ${paper === 'ESSAY' ? 'Essay' : 'General Studies'} question paper (${year}, ${label}).
 Return ONLY a JSON array, nothing else. One element per question:
-{"qNo": "1", "question": "full question text", "marks": 10, "words": 150}
-Rules:
-- qNo is the question number exactly as printed (e.g. "1", "12", "3a"). If one numbered question has parts (a), (b) with their own marks, return each part as its own element with qNo like "3a", "3b".
-- question is the complete text exactly as printed. Join broken lines and fix line-break hyphenation. Do NOT paraphrase, summarise or invent anything. Do NOT put the marks or word limit inside the question text.
-- marks and words are numbers if printed (e.g. "(Answer in 150 words) 10" means words 150, marks 10), otherwise null.
-- GS4 case studies are questions too; keep the whole case-study text in question.
-${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with several essay topics (usually 4 each). Every essay topic is its own element. Use qNo like "A1", "A2", "B1", "B2" (section letter + topic number). The topic is usually a short quote or statement; keep it exactly as printed. marks is usually 125 and words 1000-1200 if printed, otherwise null.' : ''}
-- The paper may be BILINGUAL: if a question appears in English and again in Hindi (Devanagari), extract ONLY the English version. Ignore all Hindi text completely. Never translate, never include any Hindi word, and return each question only once.
-- Question labels are often printed like "Q7.": qNo is then just "7" (no Q, no dot). On scanned pages the marks are the bare number at the right edge of the question (e.g. 10 or 15).
-- Ignore instructions, headers, footers, page numbers and section titles.${only ? `\n- IMPORTANT: return ONLY the question(s) numbered ${only.join(', ')}. Skip every other question. If they are not on these pages, return [].` : ''}${batched ? '\n- You are given only some pages of the paper. Text marked CONTEXT is only there to complete a question that is cut at a page edge; do not return a question that lies completely inside a CONTEXT part. If the pages contain no question (only instructions), return [].' : ''}`;
+{"qNo": "1", "section": null, "question": "full English question text", "marks": 10, "words": 150}
+How these papers are laid out (the same every year; the number of questions varies by year, so never stop at 20):
+- Every question is printed TWICE: first in Hindi (Devanagari), then in English. Extract ONLY the English one. Ignore all Hindi completely. Never translate and never put any Hindi word in the output. Each question is returned only once.
+- The label is "Q1." in some papers and "1." in others: qNo is just the number as a string ("1", "12", "3a"). If a numbered question has separate parts (a), (b) with their own marks, return each part as its own element ("3a", "3b"). A question that has two or three sentences is still ONE question.
+- The word limit is printed as "(Answer in 150 words)" (Hindi: "(150 शब्दों में उत्तर दीजिए)"). The marks are the bare number at the right edge (10 or 15, sometimes 12.5), either on the same line as the word limit or on the line after the question. words and marks are numbers, or null if not printed. Do NOT include the word limit or marks inside the question text.
+- question is the complete English text exactly as printed, quotation marks included. Join broken lines and fix line-break hyphenation. Do NOT paraphrase, summarise, correct or invent anything. GS4 case studies are questions too: keep the whole case-study text in question.
+- section is "A" or "B" when the paper is divided into Section A / Section B (GS4 and Essay), otherwise null.
+${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several essay topics (usually 4 each), numbered 1 to 8 one after the other. Every topic is its own element with its printed number as qNo and its section. A topic is usually a short quote or statement: copy it exactly. The marks and word limit are normally printed only in the heading ("125x2=250", "about 1000-1200 words each"): use marks 125 and words 1200 for every topic.' : ''}
+- Ignore: instructions, "Time Allowed", "Maximum Marks", page numbers, paper codes like HXS-G-GSU, "[P.T.O.]", stars, and section titles.${only ? `\n- IMPORTANT: return ONLY the question(s) numbered ${only.join(', ')}. Skip every other question. If they are not on these pages, return [].` : ''}${batched ? '\n- You are given only some pages of the paper. Text marked CONTEXT is only there to complete a question that is cut at a page edge; do not return a question that lies completely inside a CONTEXT part. If the pages contain no question (only instructions), return [].' : ''}`;
         const isPdf = f => f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
         let pages = null, doc = null;
         if (file && isPdf(file) && window.pdfjsLib) { mainsStatus('Reading PDF text...'); try { ({ doc, pages } = await pdfPages(file)); } catch (e) { pages = null; } }
@@ -5696,13 +5695,12 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
                 };
                 await Promise.all(Array.from({ length: Math.min(batches.length, Math.max(2, Math.min(keyCount, 5))) }, worker));
                 for (const q of [].concat(...results)) {   // same qNo from overlapping batches -> keep the longer text
-                    if (!q || !q.question) continue; const clean = String(q.qNo).trim().replace(/^q\.?\s*/i, '').replace(/[.):\s]+$/, ''), k = clean.toLowerCase(), o = merged.get(k);
+                    if (!q || !q.question) continue; const clean = String(q.qNo).trim().replace(/^q\.?\s*/i, '').replace(/[.):\s]+$/, ''), k = (String(q.section || '').trim().toUpperCase() + '|' + clean).toLowerCase(), o = merged.get(k);
                     if (!o || String(q.question).length > String(o.question).length) merged.set(k, { ...(o || {}), ...q, qNo: clean }); else if (o && o.marks == null && q.marks != null) { o.marks = q.marks; o.words = q.words; }
                 }
             };
             // question numbers that should exist but were not found (gaps inside 1..max, and up to the "questions in paper" number if typed)
             const missingNos = () => {
-                if (paper === 'ESSAY') return [];
                 const nums = new Set([...merged.values()].map(q => parseInt(String(q.qNo), 10)).filter(n => n > 0)); if (!nums.size) return [];
                 const top = Math.min(60, Math.max(expected || 0, ...nums)), m = []; for (let n = 1; n <= top; n++) if (!nums.has(n)) m.push(n); return m;
             };
@@ -5734,16 +5732,34 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
             return { qNo: nm ? nm[1] : String(i + 1), question: body, marks, words };
         });
     }
-    function normalize(arr) {
-        const seen = new Set(), out = [];
+    function normalize(arr, paper, year) {
+        const items = [];
         arr.forEach((it, i) => {
             const rawQ = String(it && (it.question || it.text) || ''); if (hindiShare(rawQ) > 0.4) return;   // a Hindi question: skip
-            const question = noHindi(rawQ);
+            let question = noHindi(rawQ)
+                .replace(/\[\s*P\.?\s*T\.?\s*O\.?\s*\]/gi, ' ').replace(/\bHXS\s*[-\u2013\u2014]\s*G\s*[-\u2013\u2014]\s*[A-Z]+(?:\s*\/\s*\d+)?\b/g, ' ').replace(/\bSB\d{2}\s*[-\u2013\u2014]\s*\d{3,5}\b/g, ' ').replace(/[\u2605\u2606*]{2,}/g, ' ');
+            let words = num(it.words), marks = num(it.marks);
+            const tail = question.match(/\(\s*answer\s+in\s+(\d{2,4})\s*words\s*\)\s*(\d{1,3}(?:\.\d)?)?\s*$/i);   // model left "(Answer in 150 words) 10" at the end
+            if (tail) { question = question.slice(0, tail.index); if (words == null) words = num(tail[1]); if (marks == null && tail[2]) marks = num(tail[2]); }
+            question = question.replace(/\(\s*answer\s+in\s+\d{2,4}\s*words\s*\)/gi, ' ').replace(/[ \t]+/g, ' ').replace(/\s+\n/g, '\n').trim();
             if (question.length < 10) return;
-            let qNo = String(it.qNo ?? it.number ?? (i + 1)).trim().replace(/^q\.?\s*/i, '').replace(/[.):\s]+$/, '') || String(i + 1);
-            let k = qNo, n = 2; while (seen.has(k.toLowerCase())) { k = qNo + '_' + n++; } seen.add(k.toLowerCase());
-            out.push({ qNo: k, question, marks: num(it.marks), words: num(it.words) });
+            const qNo = String(it.qNo ?? it.number ?? (i + 1)).trim().replace(/^q\.?\s*/i, '').replace(/[.):\s]+$/, '') || String(i + 1);
+            const sec = String(it.section || '').trim().toUpperCase().replace(/^SECTION\s*/, '').slice(0, 1);
+            items.push({ qNo, section: /^[A-Z]$/.test(sec) ? sec : '', question, marks, words });
         });
+        // the same number printed again in the other section (numbering restarts) -> A1, B1
+        const cnt = {}; items.forEach(q => { const k = q.qNo.toLowerCase(); cnt[k] = (cnt[k] || 0) + 1; });
+        items.forEach(q => { if (q.section && cnt[q.qNo.toLowerCase()] > 1 && !/^[A-Za-z]/.test(q.qNo)) q.qNo = q.section + q.qNo; });
+        // a missing marks/words value is filled only from the same paper: if every question with 150 words has 10 marks, a 150-word question without marks gets 10
+        const byW = {}, byM = {};
+        items.forEach(q => { if (q.words && q.marks) { (byW[q.words] = byW[q.words] || new Set()).add(q.marks); (byM[q.marks] = byM[q.marks] || new Set()).add(q.words); } });
+        items.forEach(q => {
+            if (!q.marks && q.words && byW[q.words] && byW[q.words].size === 1) q.marks = [...byW[q.words]][0];
+            if (!q.words && q.marks && byM[q.marks] && byM[q.marks].size === 1) q.words = [...byM[q.marks]][0];
+            if (paper === 'ESSAY') { if (!q.marks) q.marks = 125; if (!q.words) q.words = 1200; }   // essay heading: 125 x 2 = 250, about 1000-1200 words
+        });
+        const seen = new Set(), out = [];
+        items.forEach(q => { let k = q.qNo, n = 2; while (seen.has(k.toLowerCase())) { k = q.qNo + '_' + n++; } seen.add(k.toLowerCase()); out.push({ ...q, qNo: k }); });
         return out;
     }
     window.mainsExtract = async function () {
@@ -5760,7 +5776,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
         }
         btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-microchip"></i> Extract Mains Questions';
         if (!arr) return;
-        pending = normalize(arr); pendingMeta = { year, paper, expected };
+        pending = normalize(arr, paper, year); pendingMeta = { year, paper, expected };
         const failedB = arr.failed || [], missingB = arr.missing || [];
         pendingMeta.missing = missingB;
         if (!pending.length) { showPopup({ title: 'No questions found', type: 'error', html: '<div>No question could be found in what you gave. Check that the file or text is a Mains question paper.</div>' }); renderPreview(); return; }
@@ -5809,7 +5825,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
         if (!list.length) { showPopup({ title: 'Nothing to save', type: 'warn', html: '<div>Every question is empty.</div>' }); return; }
         const ids = new Set(); const dup = list.find(q => { const id = mkId(m.year, m.paper, q.qNo); if (ids.has(id)) return true; ids.add(id); return false; });
         if (dup) { showPopup({ title: 'Two questions have the same number', type: 'warn', html: `<div>Question number <b>${esc(dup.qNo)}</b> is used twice. Give each question its own number, then save.</div>` }); return; }
-        const recs = list.map(q => { const id = mkId(m.year, m.paper, q.qNo), old = db.find(d => d.id === id); return { ...(old || {}), id, exam: EXAM, year: m.year, paper: m.paper, qNo: String(q.qNo).trim(), question: String(q.question).trim(), marks: q.marks, words: q.words, ts: Date.now() }; });
+        const recs = list.map(q => { const id = mkId(m.year, m.paper, q.qNo), old = db.find(d => d.id === id); return { ...(old || {}), id, exam: EXAM, year: m.year, paper: m.paper, qNo: String(q.qNo).trim(), section: q.section || '', question: String(q.question).trim(), marks: q.marks, words: q.words, ts: Date.now() }; });
         try { await putMany(recs); } catch (e) { showPopup({ title: 'Could not save', type: 'error', html: `<div>${esc(e.message)}</div>` }); return; }
         const fresh = recs.filter(r => !db.some(d => d.id === r.id)).length;
         recs.forEach(r => { const i = db.findIndex(d => d.id === r.id); if (i >= 0) db[i] = r; else db.push(r); });
@@ -5826,7 +5842,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with 
     window.mainsRender = function (el) { render(el); };
     function chips(q) {
         const c = (t, cls) => `<span class="px-2 py-0.5 rounded border ${cls}">${t}</span>`;
-        return c(esc(q.year), 'bg-violet-500/20 text-violet-300 border-violet-500/30 font-bold') + c(esc(q.paper), 'bg-gray-700/60 text-gray-200 border-gray-600') + c('Q' + esc(q.qNo), 'bg-gray-700/60 text-gray-200 border-gray-600') +
+        return c(esc(q.year), 'bg-violet-500/20 text-violet-300 border-violet-500/30 font-bold') + c(esc(q.paper), 'bg-gray-700/60 text-gray-200 border-gray-600') + c('Q' + esc(q.qNo), 'bg-gray-700/60 text-gray-200 border-gray-600') + (q.section ? c('Section ' + esc(q.section), 'bg-amber-500/10 text-amber-300 border-amber-500/20') : '') +
             (q.marks ? c(esc(q.marks) + ' marks', 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20') : '') + (q.words ? c(esc(q.words) + ' words', 'bg-sky-500/10 text-sky-300 border-sky-500/20') : '');
     }
     function render(el) {
