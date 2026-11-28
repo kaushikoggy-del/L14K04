@@ -4679,7 +4679,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
                 }
                 return;
             }
-            const lanes = Math.min(10, Math.max(1, availGeminiKeys()));          // write up to 10 explanations at once, each on a different (non-resting) key
+            const lanes = Math.min(15, Math.max(1, availGeminiKeys()));          // write up to 15 explanations at once, each on a different (non-resting) key
             const batch = [];
             for (let i = 0; i < lanes; i++) { const t = nextTarget(); if (!t) break; inflight.add(t.id); batch.push(t); }
             if (!batch.length) { lastMsg = 'All questions have explanations'; updateBar(); delay = 60000; return; }
