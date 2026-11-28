@@ -4400,6 +4400,7 @@ function confirmSubmitCbt() {
             <span class="text-gray-500">${esc(paused && !verifyOn() ? 'Paused' : lastMsg)}${(!paused && /busy|limit|quota/i.test(lastMsg) && strictOn()) ? ` <button type="button" onclick="explToggleStrict()" class="ml-2 px-2 py-0.5 rounded border border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30 font-semibold">Turn Strict OFF - let Groq continue (unverified)</button>` : ''}</span>
             <span class="flex flex-wrap gap-3">
               <button type="button" onclick="explToggleVerify()" class="text-emerald-300 hover:underline">${verifyOn() ? 'Stop verifying' : 'Verify with Gemini'}${unv ? ' (' + unv + ')' : ''}</button>
+              <button type="button" onclick="explCycleVerifyModel()" title="Model used to fact-check. Click to switch: 3.8 Flash / 4 Argon / 4 Carbon" class="text-sky-300 hover:underline">Verify model: ${verifyModelLabel()}</button>
               <button type="button" onclick="explToggleStrict()" title="Strict = explanations written only with Gemini web search" class="px-2 py-0.5 rounded border font-semibold ${strictOn() ? 'border-amber-400/60 bg-amber-500/15 text-amber-200 hover:bg-amber-500/30' : 'border-emerald-400/60 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/30'}">${strictOn() ? 'Strict is ON - click to turn OFF' : 'Strict is OFF - click to turn ON'}</button>
               <button type="button" onclick="explToggleAlt()" class="text-amber-300 hover:underline">Groq fallback: ${altOff() ? 'OFF' : 'ON'}</button>
               <button type="button" onclick="explTogglePause()" class="text-sky-300 hover:underline">${paused ? 'Resume' : 'Pause'}</button>
@@ -4529,7 +4530,8 @@ If reliable sources clearly disagree with the official key, add a last line star
         let d = {}; try { d = await r.json(); } catch (e) {}
         if (!r.ok) {
             const m = (d.error && d.error.message) || ('HTTP ' + r.status);
-            const kind = r.status === 429 ? 'quota' : (r.status === 401 || r.status === 403) ? 'key' : r.status === 503 ? 'busy' : (r.status === 400 || r.status === 404) ? 'model' : 'other';
+            const keyBad = /api[ _-]?key|leaked|expired|suspended|disabled|referer/i.test(m);
+            const kind = r.status === 429 ? 'quota' : r.status === 401 ? 'key' : r.status === 403 ? (keyBad ? 'key' : 'model') : r.status === 503 ? 'busy' : (r.status === 400 || r.status === 404) ? 'model' : 'other';   // 403 about the model / plan (e.g. not on the free tier) = model problem, the key is fine
             throw new ExplErr(`${r.status} [${model}${useSearch ? ' +search' : ''}]: ${m}`, kind);
         }
         const c = d.candidates && d.candidates[0];
@@ -4541,7 +4543,7 @@ If reliable sources clearly disagree with the official key, add a last line star
     }
     const keyCool = {}, keyQFails = {};
     const modelOk = {};   // per key: the model that last worked (tried first next time)
-    let lastQuotaMsg = '', lastKeyErr = '';   // what Google last said (shown in the status bar when every key is resting)
+    let lastQuotaMsg = '', lastKeyErr = '', lastModelErr = '';   // what Google last said (shown in the status bar when every key is resting)
     const minCoolLeft = keys => { const now = Date.now(); const left = keys.map(k => (keyCool[k] || 0) - now).filter(x => x > 0); return left.length ? Math.min(...left) : 0; };
     const availGeminiKeys = () => getKeys().filter(k => !((keyCool[k] || 0) > Date.now())).length;
     async function generateFor(q, opts) {
@@ -4556,25 +4558,30 @@ If reliable sources clearly disagree with the official key, add a last line star
         const order = (opts && opts.onlyKey) ? [opts.onlyKey] : avail.map((_, i) => avail[(off + i) % avail.length]);   // onlyKey = verify workers use exactly the key they leased
         if (!order.length && keys.length) { last = new ExplErr('All Gemini keys are resting after reaching their limit', 'quota'); last.retryMs = Math.max(10000, minCoolLeft(keys)); }
         for (let k = 0; k < order.length; k++) {
-            const key = order[k]; let tried = 0, quotaN = 0;
-            const allModels = await getModels(key);
-            const models = (modelOk[key] && allModels.includes(modelOk[key])) ? [modelOk[key], ...allModels.filter(m => m !== modelOk[key])] : allModels;
+            const key = order[k]; let tried = 0, quotaN = 0, softN = 0;
+            const allModels = (opts && opts.models && opts.models.length) ? opts.models : await getModels(key);   // opts.models = verify chain (best model first)
+            const memKey = key + ((opts && opts.models) ? '|v:' + opts.models[0] : '');
+            const models = (modelOk[memKey] && allModels.includes(modelOk[memKey])) ? [modelOk[memKey], ...allModels.filter(m => m !== modelOk[memKey])] : allModels;
             for (const useSearch of ((opts && opts.noSearch) ? [false] : needSearch ? [true] : [true, false])) {
                 for (const model of models) {
                     tried++;
-                    try { const out = await callOnce(key, model, q, useSearch, opts); keyQFails[key] = 0; modelOk[key] = model; out.model = model; out.provider = 'gemini'; return out; }
-                    catch (e) { last = e; if (e.kind === 'quota') { quotaN++; lastQuotaMsg = String(e.message || ''); continue; } if (e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
+                    try { const out = await callOnce(key, model, q, useSearch, opts); keyQFails[key] = 0; modelOk[memKey] = model; out.model = model; out.provider = 'gemini'; return out; }
+                    catch (e) { last = e; if (e.kind === 'quota') { quotaN++; softN++; lastQuotaMsg = String(e.message || ''); continue; } if (e.kind === 'model') { softN++; lastModelErr = String(e.message || ''); continue; } if (e.kind === 'key') break; if (e.kind === 'busy' || e.kind === 'net') continue; }
                 }
                 if (last && last.kind === 'key') break;
             }
-            if (quotaN > 0 && quotaN === tried) {   // every model tried on this key was over quota: rest this key. Escalate ONCE per rest period (not once per parallel request) and follow Google's own "retry in Ns" hint when it gives one
+            if (tried > 0 && softN === tried) {   // every model tried on this key was over quota / not available for it: rest this key.
                 const nowT = Date.now();
-                if (!((keyCool[key] || 0) > nowT)) {
-                    keyQFails[key] = (keyQFails[key] || 0) + 1;
-                    const rm = String(lastQuotaMsg).match(/retry in ([\d.]+)\s*s/i);
-                    const ms = rm ? Math.ceil(parseFloat(rm[1]) * 1000) + 3000 : 60000 * Math.pow(2, keyQFails[key] - 1);
+                if (!((keyCool[key] || 0) > nowT)) {   // escalate ONCE per rest period (not once per parallel request) and follow Google's own "retry in Ns" hint when it gives one
+                    let ms;
+                    if (quotaN > 0) {
+                        keyQFails[key] = (keyQFails[key] || 0) + 1;
+                        const rm = String(lastQuotaMsg).match(/retry in ([\d.]+)\s*s/i);
+                        ms = rm ? Math.ceil(parseFloat(rm[1]) * 1000) + 3000 : 60000 * Math.pow(2, keyQFails[key] - 1);
+                    } else ms = 600000;   // only "model not available" errors: look again in 10 min
                     keyCool[key] = nowT + Math.min(3600000, Math.max(5000, ms));
                 }
+                if (!quotaN) { last = new ExplErr(String(lastModelErr || 'No usable model for this key'), 'quota'); }   // lets the pool rest the key instead of failing the question
             }
         }
         if (last && last.kind === 'quota' && !last.retryMs) last.retryMs = Math.max(10000, minCoolLeft(keys));
@@ -4645,7 +4652,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
     }
     async function verifyOne(q, key) {
         const e = explMap[q.id];
-        const out = await limited(q, { prompt: buildVerifyPrompt(q, e), requireSearch: true, geminiOnly: true, maxTokens: 4096, onlyKey: key, gap: 0 });
+        const out = await limited(q, { prompt: buildVerifyPrompt(q, e), requireSearch: true, geminiOnly: true, maxTokens: 8192, models: verifyChain(), onlyKey: key, gap: 0 });   // 8192: thinking models spend part of the limit on reasoning
         const m = out.text.match(/^\s*VERDICT:\s*(OK|FIXED)\b[\s\-\u2013:]*(.*)$/im);
         if (!m) throw new ExplErr('Verifier reply had no VERDICT line', 'other');
         const fixed = m[1].toUpperCase() === 'FIXED';
@@ -4667,19 +4674,33 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
     // ----- Verify pool: one worker per Gemini key (max 15). A worker leases a free key, verifies one question with THAT key only,
     //       then immediately takes the next question - one slow reply never holds the other keys back, and no key gets two requests at once.
     //       If a key hits its limit it rests and the same question is retried on another free key; the pool stops only when every key is resting. -----
-    const VERIFY_MAX_LANES = 15, VERIFY_PER_KEY = 1;   // VERIFY_PER_KEY = 2 allows 2 requests per key (faster, but more 429 risk on free keys)
+    // Fact-checking models, strongest first. Gemini 3+ models need a PAID key for Google Search; the 2.5 models still have free search until 1 Dec 2026 (then Google routes them to 3.5 Flash-Lite).
+    // The chosen model is tried first on every key; if a key cannot use it, the app falls back down the list.
+    const VERIFY_CHAIN = ['gemini-4-carbon', 'gemini-4-argon', 'gemini-3.8-flash', 'gemini-3.6-flash', 'gemini-2.5-flash', 'gemini-2.5-flash-lite'];
+    const VERIFY_CHOICES = [['gemini-3.8-flash', '3.8 Flash'], ['gemini-4-argon', '4 Argon'], ['gemini-4-carbon', '4 Carbon']];
+    const verifyModelPref = () => { let v = ''; try { v = localStorage.getItem('expl_verify_model') || ''; } catch (e) {} return VERIFY_CHOICES.some(c => c[0] === v) ? v : 'gemini-3.8-flash'; };
+    const verifyChain = () => VERIFY_CHAIN.slice(VERIFY_CHAIN.indexOf(verifyModelPref()));
+    const verifyModelLabel = () => (VERIFY_CHOICES.find(c => c[0] === verifyModelPref()) || [0, '3.8 Flash'])[1];
+    window.explCycleVerifyModel = function () {
+        const i = VERIFY_CHOICES.findIndex(c => c[0] === verifyModelPref()), nx = VERIFY_CHOICES[(i + 1) % VERIFY_CHOICES.length];
+        try { localStorage.setItem('expl_verify_model', nx[0]); } catch (e) {}
+        if (nx[0] !== 'gemini-3.8-flash') showPopup({ title: 'Verify model: Gemini ' + nx[1], type: 'warn', html: '<div>This is a stronger model, but <b>Gemini 4 models and Google Search need a PAID Gemini key</b> (billed per token). Keys on the free tier cannot use it, so they automatically fall back to the next model in the list.</div>' });
+        updateBar();
+    };
+    const VERIFY_MAX_LANES = 15; let verifyPerKey = 1;   // requests allowed at the same time on ONE key (set automatically from the number of keys)
     const keyLease = {}; let leaseRR = 0;
     function leaseKey() {
         const ks = getKeys(), now = Date.now();
         for (let i = 0; i < ks.length; i++) {
             const k = ks[(leaseRR + i) % ks.length];
-            if ((keyLease[k] || 0) < VERIFY_PER_KEY && !((keyCool[k] || 0) > now)) { leaseRR = (leaseRR + i + 1) % ks.length; keyLease[k] = (keyLease[k] || 0) + 1; return k; }
+            if ((keyLease[k] || 0) < verifyPerKey && !((keyCool[k] || 0) > now)) { leaseRR = (leaseRR + i + 1) % ks.length; keyLease[k] = (keyLease[k] || 0) + 1; return k; }
         }
         return null;
     }
     const releaseKey = k => { keyLease[k] = Math.max(0, (keyLease[k] || 0) - 1); };
     async function verifyPool(first) {
-        const lanes = Math.min(VERIFY_MAX_LANES, Math.max(1, availGeminiKeys() * VERIFY_PER_KEY));
+        verifyPerKey = Math.min(8, Math.max(1, Math.ceil(10 / Math.max(1, getKeys().length))));   // few keys (e.g. one paid key) -> several requests at once on each key; many keys -> one each
+        const lanes = Math.min(VERIFY_MAX_LANES, Math.max(1, availGeminiKeys() * verifyPerKey));
         const st = { ok: 0, fixed: 0, stop: null, lanes };
         const worker = async () => {
             while (!st.stop) {
@@ -4739,7 +4760,7 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
                 if (!sp) { delay = EXPL_DELAY_MS; if (vs.ok) lastMsg = `Verified ${vs.ok}${vs.fixed ? ' - ' + vs.fixed + ' corrected' : ' - no changes needed'}`; }
                 else if (sp.type === 'rest') {   // every key is resting: the next free key takes over automatically
                     delay = sp.ms;
-                    const why = lastKeyErr && !lastQuotaMsg ? ' | Key error: ' + lastKeyErr.replace(/\s+/g, ' ').slice(0, 140) : (lastQuotaMsg ? ' | Google said: ' + lastQuotaMsg.replace(/\s+/g, ' ').slice(0, 320) : '');
+                    const why = lastKeyErr && !lastQuotaMsg ? ' | Key error: ' + lastKeyErr.replace(/\s+/g, ' ').slice(0, 140) : (lastQuotaMsg ? ' | Google said: ' + lastQuotaMsg.replace(/\s+/g, ' ').slice(0, 320) : (lastModelErr ? ' | Model error: ' + lastModelErr.replace(/\s+/g, ' ').slice(0, 260) : ''));
                     lastMsg = `Verifying - all keys resting after their limit, next key back in ${Math.ceil(delay / 1000)} s (${availGeminiKeys()} of ${getKeys().length} keys ready)${why}`;
                 } else { delay = 10 * 60000; consecutiveErrors = 0; }
                 updateBar();
