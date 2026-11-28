@@ -5513,11 +5513,11 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
             const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`, {}, 15000), d = await r.json();
             if (r.ok && Array.isArray(d.models)) {
                 const v = d.models.filter(m => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent')).map(m => m.name.replace(/^models\//, '')).filter(n => /flash/i.test(n) && !/tts|audio|image|robotics|computer|custom|embedding|aqa|exp/i.test(n));
-                v.sort((a, b) => ((/lite/i.test(a) ? 10 : 0) + (/latest/i.test(a) ? 0 : 5)) - ((/lite/i.test(b) ? 10 : 0) + (/latest/i.test(b) ? 0 : 5)));
-                if (v.length) { liveModels = v.slice(0, 3); return liveModels; }
+                v.sort((a, b) => { const sc = x => (/lite/i.test(x) ? 0 : 10) + (/latest/i.test(x) ? 5 : 0); return sc(a) - sc(b); });   // fast flash-lite models first, like the Prelims importer
+                if (v.length) { liveModels = v.slice(0, 4); return liveModels; }
             }
         } catch (e) {}
-        return ['gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+        return ['gemini-3.5-flash-lite', 'gemini-3.8-flash'];
     }
     function parseJsonArray(t) {
         if (!t) return null;
@@ -5525,62 +5525,179 @@ Confidence: High / Medium / Low - how far pattern-based elimination alone works 
         const a = c.indexOf('['), b = c.lastIndexOf(']'); if (a < 0 || b <= a) return null;
         try { const r = JSON.parse(c.slice(a, b + 1)); return Array.isArray(r) ? r : null; } catch (e) { return null; }
     }
-    function mainsStatus(t) { const b = document.getElementById('btn-mains-extract'); if (b && b.disabled) b.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + t; }
-    // Reads the PDF's own text layer in the browser (fast) and removes Hindi (Devanagari) so only English goes to Gemini.
-    async function pdfEnglishText(file) {
-        if (!window.pdfjsLib || !(file.type === 'application/pdf' || /\.pdf$/i.test(file.name))) return null;
-        try {
-            const pdf = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise; let out = '';
-            for (let p = 1; p <= pdf.numPages; p++) {
-                const c = await (await pdf.getPage(p)).getTextContent(); let y = null, line = '';
-                for (const it of c.items) { const yy = Math.round(it.transform[5]); if (y !== null && Math.abs(yy - y) > 3) { out += line + '\n'; line = ''; } y = yy; line += it.str + (it.hasEOL ? '\n' : ''); }
-                out += line + '\n';
-            }
-            const clean = out.split('\n').filter(l => !(/[\u0900-\u097F]/.test(l) && (l.match(/[A-Za-z]/g) || []).length < 12)).map(l => l.replace(/[\u0900-\u097F\u200c\u200d]+/g, ' ').replace(/\s+/g, ' ').trim()).filter(l => /[A-Za-z0-9]/.test(l)).join('\n');   // Hindi lines (and Hindi-only remnants like "1. (150 ) 10") are dropped
-            return clean.replace(/\s+/g, '').length > pdf.numPages * 150 ? clean : null;   // too little text = scanned PDF, send the file instead
-        } catch (e) { return null; }
+    // ===== Extraction engine: same design as the Prelims importer =====
+    // local PDF text (Hindi removed) -> small page batches -> parallel workers -> key rotation, retries, model + provider failover
+    let lastMsg = '', exStart = 0;
+    function mainsStatus(t) {
+        if (t !== undefined) lastMsg = t;
+        const b = document.getElementById('btn-mains-extract');
+        if (b && b.disabled) b.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> ' + esc(lastMsg) + (exStart ? ' - ' + Math.round((Date.now() - exStart) / 1000) + 's' : '');
     }
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const keyRest = {}; let rr = 0, groqModels = null;
+    function providerKeys() {
+        let all = []; try { all = String(localStorage.getItem('upsc_gemini_api_key') || '').split(/[\s,;]+/).map(k => k.trim()).filter(k => k.length > 10); } catch (e) {}
+        return { gem: all.filter(k => k.startsWith('AIza') || k.startsWith('AQ.')), groq: all.filter(k => k.startsWith('gsk_')), or: all.filter(k => k.startsWith('sk-or-')) };
+    }
+    async function getGroqModels(key) {
+        if (groqModels) return groqModels;
+        try {
+            const r = await fetchT('https://api.groq.com/openai/v1/models', { headers: { Authorization: 'Bearer ' + key } }, 15000), d = await r.json();
+            if (r.ok && Array.isArray(d.data)) {
+                const v = d.data.map(m => m.id).filter(id => !/whisper|tts|guard|safeguard|embed|vision|allam|orpheus|canopylabs|playai|compound/i.test(id));
+                v.sort((a, b) => { const sc = x => (/70b|120b|90b/i.test(x) ? 0 : /32b|17b|8b/i.test(x) ? 5 : 10); return sc(a) - sc(b); });
+                if (v.length) { groqModels = v.slice(0, 3); return groqModels; }
+            }
+        } catch (e) {}
+        return ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'];
+    }
+    // One batch -> array of questions. Never throws until every key, model and provider has been tried.
+    async function callBatch(parts, label, expect) {
+        const { gem, groq, or } = providerKeys();
+        const hasFile = parts.some(p => p.inlineData);
+        const ok = a => a && !(a.length === 0 && expect);
+        let last = 'All AI keys are busy or unavailable.';
+        if (gem.length) {
+            const models = await getModels(gem[0]);
+            for (let round = 0; round < 2; round++) {
+                const start = rr++;
+                for (let i = 0; i < gem.length; i++) {
+                    const key = gem[(start + i) % gem.length], kn = gem.indexOf(key) + 1;
+                    if ((keyRest[key] || 0) > Date.now() && i < gem.length - 1) continue;   // this key is resting: use another one first
+                    let skipKey = false;
+                    for (const m of models) {
+                        for (const temp of [0, 0.6]) {
+                            mainsStatus(`${label} - key #${kn}/${gem.length} (${m})${temp ? ' - retry' : ''}`);
+                            try {
+                                let r, d;
+                                for (let at = 0; at < 3; at++) {
+                                    r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`, {
+                                        method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: temp, maxOutputTokens: 16384, responseMimeType: 'application/json' } })
+                                    }, 90000);
+                                    d = await r.json().catch(() => ({}));
+                                    if (![500, 502, 503, 504].includes(r.status)) break;
+                                    mainsStatus(`${label} - Gemini busy, retrying (${at + 1}/3)`); await sleep(2000 * (at + 1));
+                                }
+                                if (!r.ok || d.error) {
+                                    const em = (d.error && d.error.message) || ('HTTP ' + r.status);
+                                    last = `Gemini key #${kn} (${m}): ${em}`;
+                                    if ([401, 403, 429].includes(r.status) || /API key not valid|API_KEY_INVALID|quota|RESOURCE_EXHAUSTED|expired/i.test(em)) { keyRest[key] = Date.now() + (r.status === 429 || /quota|RESOURCE_EXHAUSTED/i.test(em) ? 60000 : 600000); skipKey = true; }
+                                    break;   // key problem -> next key; model problem (400/404) -> next model
+                                }
+                                const c = d.candidates && d.candidates[0];
+                                const txt = ((c && c.content && c.content.parts) || []).filter(p => !p.thought).map(p => p.text || '').join('');
+                                const arr = parseJsonArray(txt);
+                                if (ok(arr)) return arr;
+                                last = `Gemini key #${kn} (${m}): unusable reply` + (c && c.finishReason ? ` [${c.finishReason}]` : '');
+                                if (!(c && c.finishReason === 'RECITATION')) break;   // only Gemini's copyright filter is worth retrying on the same model
+                            } catch (e) { last = `Gemini key #${kn} (${m}): ${e.name === 'AbortError' ? 'timed out (90s)' : e.message}`; break; }
+                        }
+                        if (skipKey) break;
+                    }
+                }
+                if (round === 0 && /429|quota|RESOURCE_EXHAUSTED|busy|503/i.test(last)) { mainsStatus(`${label} - waiting for quota...`); await sleep(12000); } else break;
+            }
+        }
+        if (!hasFile) {
+            const oai = [{ role: 'user', content: parts.filter(p => p.text).map(p => ({ type: 'text', text: p.text })) }];
+            for (let i = 0; i < groq.length; i++) for (const m of await getGroqModels(groq[0])) {
+                mainsStatus(`${label} - Groq #${i + 1} (${m})`);
+                try {
+                    const r = await fetchT('https://api.groq.com/openai/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + groq[i] }, body: JSON.stringify({ model: m, messages: oai, temperature: 0, max_tokens: 4096 }) }, 90000);
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok || d.error) { last = `Groq #${i + 1} (${m}): ${(d.error && d.error.message) || 'HTTP ' + r.status}`; continue; }
+                    const arr = parseJsonArray(d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content); if (ok(arr)) return arr;
+                } catch (e) { last = `Groq #${i + 1}: ${e.message}`; }
+            }
+            for (let i = 0; i < or.length; i++) for (const m of ['openrouter/free', 'google/gemini-2.0-flash', 'openai/gpt-4o-mini']) {
+                mainsStatus(`${label} - OpenRouter #${i + 1} (${m.split('/').pop()})`);
+                try {
+                    const r = await fetchT('https://openrouter.ai/api/v1/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + or[i], 'HTTP-Referer': location.origin, 'X-Title': 'UPSC PYQ Analytics' }, body: JSON.stringify({ model: m, messages: oai, temperature: 0 }) }, 45000);
+                    const d = await r.json().catch(() => ({}));
+                    if (!r.ok || d.error) { last = `OpenRouter #${i + 1}: ${(d.error && d.error.message) || 'HTTP ' + r.status}`; continue; }
+                    const arr = parseJsonArray(d.choices && d.choices[0] && d.choices[0].message && d.choices[0].message.content); if (ok(arr)) return arr;
+                } catch (e) { last = `OpenRouter #${i + 1}: ${e.message}`; }
+            }
+        }
+        throw new Error(last);
+    }
+    // Reads the PDF's own text layer in the browser. Hindi (Devanagari) lines are dropped so only English goes to the AI.
+    async function pdfPages(file) {
+        const doc = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise, pages = [];
+        for (let n = 1; n <= doc.numPages; n++) {
+            const c = await (await doc.getPage(n)).getTextContent(); let y = null, line = '', out = '';
+            for (const it of c.items) { const yy = Math.round(it.transform[5]); if (y !== null && Math.abs(yy - y) > 3) { out += line + '\n'; line = ''; } y = yy; line += it.str + (it.hasEOL ? '\n' : ''); }
+            out += line;
+            if (out.replace(/\s+/g, '').length < 40) { pages.push({ scanned: true, text: '' }); continue; }   // no text layer = scanned page
+            const eng = out.split('\n').filter(l => !(/[\u0900-\u097F]/.test(l) && (l.match(/[A-Za-z]/g) || []).length < 12)).map(l => l.replace(/[\u0900-\u097F\u200c\u200d]+/g, ' ').replace(/\s+/g, ' ').trim()).filter(l => /[A-Za-z0-9]/.test(l)).join('\n');
+            pages.push({ scanned: false, text: eng });   // a page that was only Hindi ends up with empty text and is skipped
+        }
+        return { doc, pages };
+    }
+    function chunkText(t, size) { const out = []; let cur = ''; for (const l of String(t).split('\n')) { if (cur.length + l.length > size && cur) { out.push(cur); cur = ''; } cur += l + '\n'; } if (cur.trim()) out.push(cur); return out.map(x => ({ scanned: false, text: x.trim() })); }
     async function geminiExtract(year, paper, raw, file) {
-        const keys = geminiKeys();
-        if (!keys.length) throw new Error('No Gemini key saved. Add one in Settings (the three-dot menu, API Key Vault).');
-        if (file && !raw) { mainsStatus('Reading PDF text...'); const t = await pdfEnglishText(file); if (t) { raw = t; file = null; } }
+        const pk = providerKeys();
+        if (!pk.gem.length && !pk.groq.length && !pk.or.length) throw new Error('No API key saved. Add one in Settings (the three-dot menu, API Key Vault).');
         const label = (PAPERS.find(p => p[0] === paper) || [paper, paper])[1];
-        const prompt = `You are extracting questions from a UPSC Civil Services MAINS ${paper === 'ESSAY' ? 'Essay' : 'General Studies'} question paper (${year}, ${label}).
+        const prompt = (batched) => `You are extracting questions from a UPSC Civil Services MAINS ${paper === 'ESSAY' ? 'Essay' : 'General Studies'} question paper (${year}, ${label}).
 Return ONLY a JSON array, nothing else. One element per question:
 {"qNo": "1", "question": "full question text", "marks": 10, "words": 150}
 Rules:
 - qNo is the question number exactly as printed (e.g. "1", "12", "3a"). If one numbered question has parts (a), (b) with their own marks, return each part as its own element with qNo like "3a", "3b".
 - question is the complete text exactly as printed. Join broken lines and fix line-break hyphenation. Do NOT paraphrase, summarise or invent anything. Do NOT put the marks or word limit inside the question text.
 - marks and words are numbers if printed (e.g. "(Answer in 150 words) 10" means words 150, marks 10), otherwise null.
-- GS4 case studies are questions too; keep the whole case-study text in question.\n${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with several essay topics (usually 4 each). Every essay topic is its own element. Use qNo like "A1", "A2", "B1", "B2" (section letter + topic number). The topic is usually a short quote or statement; keep it exactly as printed. marks is usually 125 and words 1000-1200 if printed, otherwise null.' : ''}
-- The paper is BILINGUAL: every question appears in English and again in Hindi (Devanagari). Extract ONLY the English version. Ignore all Hindi text completely. Never translate, never include any Hindi word, and return each question only once.
-- Ignore instructions, headers, footers, page numbers and section titles.`;
-        const parts = [{ text: prompt }];
-        if (file) parts.push({ inlineData: { mimeType: file.type || 'application/pdf', data: await toB64(file) } });
-        if (raw) parts.push({ text: 'QUESTION PAPER TEXT:\n' + raw });
-        const models = await getModels(keys[0]);
-        let last = '';
-        const t0 = Date.now(), how = file ? 'scanned file' : 'text'; let cur = '';
-        const tick = setInterval(() => mainsStatus(`Gemini is reading the ${how} (${cur}) - ${Math.round((Date.now() - t0) / 1000)}s`), 1000);
+- GS4 case studies are questions too; keep the whole case-study text in question.
+${paper === 'ESSAY' ? '- ESSAY paper: it has Section A and Section B, each with several essay topics (usually 4 each). Every essay topic is its own element. Use qNo like "A1", "A2", "B1", "B2" (section letter + topic number). The topic is usually a short quote or statement; keep it exactly as printed. marks is usually 125 and words 1000-1200 if printed, otherwise null.' : ''}
+- The paper may be BILINGUAL: if a question appears in English and again in Hindi (Devanagari), extract ONLY the English version. Ignore all Hindi text completely. Never translate, never include any Hindi word, and return each question only once.
+- Ignore instructions, headers, footers, page numbers and section titles.${batched ? '\n- You are given only some pages of the paper. Text marked CONTEXT is only there to complete a question that is cut at a page edge; do not return a question that lies completely inside a CONTEXT part. If the pages contain no question (only instructions), return [].' : ''}`;
+        const isPdf = f => f && (f.type === 'application/pdf' || /\.pdf$/i.test(f.name));
+        let pages = null, doc = null;
+        if (file && isPdf(file) && window.pdfjsLib) { mainsStatus('Reading PDF text...'); try { ({ doc, pages } = await pdfPages(file)); } catch (e) { pages = null; } }
+        else if (raw) pages = chunkText(raw, 3500);
+        exStart = Date.now(); const tick = setInterval(() => mainsStatus(), 1000);
         try {
-        for (const key of keys) {
-            for (const m of models) {
-                try {
-                    cur = m; mainsStatus(`Gemini is reading the ${how} (${m})...`);
-                    const r = await fetchT(`https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent?key=${key}`, {
-                        method: 'POST', headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ contents: [{ role: 'user', parts }], generationConfig: { temperature: 0, maxOutputTokens: 16384, responseMimeType: 'application/json' } })
-                    }, 120000);
-                    const d = await r.json().catch(() => ({}));
-                    if (!r.ok) { last = (d.error && d.error.message) || ('HTTP ' + r.status); if (r.status === 429 || r.status === 403) break; continue; }
-                    const txt = ((d.candidates && d.candidates[0] && d.candidates[0].content && d.candidates[0].content.parts) || []).map(p => p.text || '').join('');
-                    const arr = parseJsonArray(txt); if (arr) return arr;
-                    last = 'Gemini reply was not a valid list of questions';
-                } catch (e) { last = e.name === 'AbortError' ? 'Gemini took too long' : e.message; }
+            let batches = [];
+            if (pages) {
+                const total = pages.reduce((a, p) => a + p.text.length, 0), anyScan = pages.some(p => p.scanned);
+                if (!anyScan && total <= 7000) batches.push({ type: 'text', nums: pages.map((_, i) => i + 1).filter(n => pages[n - 1].text) });
+                else { let cur = null; for (let n = 1; n <= pages.length; n++) { const pg = pages[n - 1]; if (!pg.scanned && !pg.text) continue; const type = pg.scanned ? 'img' : 'text'; if (cur && cur.type === type && cur.nums.length < 2) cur.nums.push(n); else { cur = { type, nums: [n] }; batches.push(cur); } } }
+                batches = batches.filter(b => b.nums.length);
+                if (!batches.length) { pages = null; batches = []; }
             }
-        }
-        } finally { clearInterval(tick); }
-        throw new Error(last || 'Gemini did not respond');
+            if (!pages) {   // single image, or a PDF that pdf.js could not open: send the file itself in one call
+                if (!file) throw new Error('Nothing readable was found.');
+                mainsStatus('Reading the file...');
+                return await callBatch([{ text: prompt(false) }, { inlineData: { mimeType: file.type || 'application/pdf', data: await toB64(file) } }], 'Whole file', false);
+            }
+            const results = new Array(batches.length), failed = []; let next = 0, done = 0; const t0 = Date.now();
+            const build = async b => {
+                const f = b.nums[0], l = b.nums[b.nums.length - 1];
+                if (b.type === 'text') {
+                    const prev = f > 1 ? pages[f - 2].text.slice(-600) : '', nxt = l < pages.length ? pages[l].text.slice(0, 600) : '', body = b.nums.map(n => pages[n - 1].text).join('\n\n');
+                    const txt = [prev ? '[CONTEXT - END OF PREVIOUS PAGE]:\n' + prev : '', `[MAIN PAGES ${f}-${l}]:\n${body}`, nxt ? '[CONTEXT - START OF NEXT PAGE]:\n' + nxt : ''].filter(Boolean).join('\n\n');
+                    return { parts: [{ text: prompt(batches.length > 1) }, { text: txt }], expect: body.length > 400 && /words|marks|discuss|examine|critically|explain|comment|analy[sz]e|essay/i.test(body) };
+                }
+                const parts = [{ text: prompt(batches.length > 1) }];
+                for (const n of b.nums) { const pg = await doc.getPage(n), vp = pg.getViewport({ scale: 1.6 }), cv = document.createElement('canvas'); cv.width = vp.width; cv.height = vp.height; const cx = cv.getContext('2d'); cx.filter = 'grayscale(100%) contrast(130%)'; await pg.render({ canvasContext: cx, viewport: vp }).promise; parts.push({ inlineData: { mimeType: 'image/jpeg', data: cv.toDataURL('image/jpeg', 0.8).split(',')[1] } }); }
+                return { parts, expect: false };
+            };
+            const worker = async () => {
+                for (;;) {
+                    const i = next++; if (i >= batches.length) return; const b = batches[i], lab = `Batch ${i + 1}/${batches.length} (P.${b.nums[0]}${b.nums.length > 1 ? '-' + b.nums[b.nums.length - 1] : ''})`;
+                    try { const { parts, expect } = await build(b); results[i] = await callBatch(parts, lab, expect); }
+                    catch (e) { failed.push(`${lab}: ${e.message}`); results[i] = []; }
+                    done++; if (done < batches.length) mainsStatus(`${done}/${batches.length} batches done, about ${Math.round((Date.now() - t0) / 1000 / done * (batches.length - done))}s left`);
+                }
+            };
+            const keyCount = pk.gem.length + pk.groq.length + pk.or.length;
+            await Promise.all(Array.from({ length: Math.min(batches.length, Math.max(2, Math.min(keyCount, 5))) }, worker));
+            const merged = new Map();   // same qNo from overlapping batches -> keep the longer text
+            for (const q of [].concat(...results)) { if (!q || !q.question) continue; const k = String(q.qNo).trim().toLowerCase(), o = merged.get(k); if (!o || String(q.question).length > String(o.question).length) merged.set(k, { ...(o || {}), ...q }); else if (o && o.marks == null && q.marks != null) { o.marks = q.marks; o.words = q.words; } }
+            const arr = [...merged.values()];
+            if (!arr.length && failed.length) throw new Error(failed[0]);
+            arr.failed = failed; return arr;
+        } finally { clearInterval(tick); exStart = 0; }
     }
     // basic offline reader for pasted text (used only if Gemini fails)
     function ruleParse(text) {
@@ -5629,8 +5746,10 @@ Rules:
         btn.disabled = false; btn.innerHTML = '<i class="fa-solid fa-microchip"></i> Extract Mains Questions';
         if (!arr) return;
         pending = normalize(arr); pendingMeta = { year, paper, expected };
+        const failedB = arr.failed || [];
         if (!pending.length) { showPopup({ title: 'No questions found', type: 'error', html: '<div>No question could be found in what you gave. Check that the file or text is a Mains question paper.</div>' }); renderPreview(); return; }
         renderPreview();
+        if (failedB.length) showPopup({ title: 'Some pages could not be read', type: 'warn', html: `<div>${failedB.length} part(s) of the paper failed after trying all keys and models, so some questions may be missing:</div><div class="text-xs text-gray-400">${failedB.map(esc).join('<br>')}</div><div>Check the list below and use Extract again, or add the missing question by hand.</div>` });
     };
 
     // ---------- preview + save ----------
