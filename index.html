@@ -6025,7 +6025,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
     saveJ(LS_SYL, syl);
     window.mainsSeedSyllabus = paper => { syl[paper] = JSON.parse(JSON.stringify(SEED[paper])); saveJ(LS_SYL, syl); window.mainsRefresh && window.mainsRefresh(); };
     window.mainsStatusHook = t => { ui.live = t; };
-    const ui = { live: '', dimBusy: '', tab: 'questions', paper: 'GS2', subject: '', open: {}, editQ: null, busy: '', tagging: false, stop: false, progress: '', synPaper: '' };
+    const ui = { allBusy: false, allStop: false, allMsg: '', live: '', dimBusy: '', tab: 'questions', paper: 'GS2', subject: '', open: {}, editQ: null, busy: '', tagging: false, stop: false, progress: '', synPaper: '' };
     const api = () => window.mainsApi;
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const norm = x => String(x || '').toLowerCase().replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\s+/g, ' ').trim();
@@ -6110,6 +6110,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
             <span><b class="text-violet-300">${all.length}</b> questions &middot; <b class="text-emerald-300">${all.length - untagged}</b> tagged &middot; <b class="${untagged ? 'text-amber-300' : 'text-gray-400'}">${untagged}</b> not tagged</span>
             <span class="ml-auto flex flex-wrap gap-3 items-center"><span class="text-violet-300">${esc(ui.progress)}</span>
             ${(all.length - untagged && p !== 'ESSAY') ? '<button type="button" data-ms="automark" class="text-emerald-300 hover:underline"><i class="fa-solid fa-scale-balanced"></i> Mark Static / Mixed / Dynamic from PYQs</button>' : ''}${ui.tagging ? '<button type="button" data-ms="stoptag" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>' : `<button type="button" data-ms="tag" ${(!subs.length || !all.length) ? 'disabled style="opacity:.5"' : ''} class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-bold"><i class="fa-solid fa-tags"></i> Tag ${untagged ? untagged + ' new' : 'all'} questions (AI)</button>${all.length - untagged ? '<button type="button" data-ms="retag" class="text-amber-300 hover:underline">Re-tag everything</button>' : ''}`}</span></div>`;
+        h += dimPanel();
         if (p === 'ESSAY') { el.innerHTML = h + (all.length ? essayView(all) : '<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300">No Essay topics saved yet. Upload them from Import &amp; AI Tagger &gt; Mains &gt; Essay Paper.</div>'); return; }
         if (!subs.length) { el.innerHTML = h + `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300 space-y-2"><div>First add the syllabus of ${esc(p)} in the <b>Syllabus</b> tab and mark each subject as Static / Mixed / Dynamic.</div><button type="button" data-ms-tab="syllabus" class="px-3 py-1.5 bg-violet-600 text-white rounded-lg font-bold">Open Syllabus tab</button></div>`; return; }
         if (!all.length) { el.innerHTML = h + `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300">No ${esc(p)} questions saved yet. Upload them from Import &amp; AI Tagger &gt; Mains.</div>`; return; }
@@ -6223,6 +6224,8 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         else if (a === 'dimtopic') { const [pp, ss, tt] = b.dataset.k.split('|'); await buildDimsFor(pp, ss, tt); }
         else if (a === 'dimsubject') { const n = await buildDimsFor(ui.paper, b.dataset.s); pop({ title: 'Dimensions ready', type: 'ok', html: `<div>Dimensions were built for ${n} topic${n === 1 ? '' : 's'} of ${esc(b.dataset.s)}.</div>` }); }
         else if (a === 'dimall') { let n = 0; for (const sb of subjectsOf(ui.paper)) n += await buildDimsFor(ui.paper, sb.name); pop({ title: 'Dimensions ready', type: 'ok', html: `<div>Dimensions were built for ${n} topics of ${esc(ui.paper)}. Use "Download notes" to save them.</div>` }); }
+        else if (a === 'dimbuildall') await buildAllMissing();
+        else if (a === 'dimstopall') { ui.allStop = true; ui.allMsg = 'Stopping after the current topics...'; refresh(); }
         else if (a === 'dlnotes') downloadNotes(ui.paper);
         else if (a === 'suggest') await suggest(b.dataset.k);
         else if (a === 'essaysuggest') await essaySuggest(b.dataset.k);
@@ -6319,6 +6322,104 @@ Reply ONLY with a JSON array: [{"dimension":"...","q":[1,4]}]  (q = the question
             });
         });
         const blob = new Blob([t], { type: 'text/markdown' }), l = document.createElement('a'); l.href = URL.createObjectURL(blob); l.download = `Mains_${p}_dimensions_${new Date().toISOString().slice(0, 10)}.md`; document.body.appendChild(l); l.click(); l.remove();
+    }
+
+
+    // ---------- Dimensions coverage (all papers) + build everything that is missing ----------
+    const DIM_PAPERS = ['GS1', 'GS2', 'GS3', 'GS4', 'ESSAY'];
+    async function buildTopicDims(p, sb, t, qs) {   // one topic: the AI names the dimensions, saved in dimStore (throws on failure)
+        const key = dimKey(p, sb.name, t), list = qs.slice().sort((a, b) => b.year - a.year).slice(0, 60);
+        const prompt = `You are a UPSC Mains expert. Paper ${p}, subject "${sb.name}", syllabus topic "${t}".
+Below are ALL the Mains questions UPSC has asked from this topic. Group them into DISTINCT DIMENSIONS - the different angles from which UPSC attacks this topic.
+Rules:
+- Name each dimension in plain English as a student would write it in notes, 4-12 words (example for "Food processing industries": "Impediments in marketing and supply chain management", "Role in upliftment of poor farmers", "Government measures for generating employment", "Challenges and opportunities", "Significance and scope").
+- A question that repeats the same angle as another (same dimension asked again in another year) goes into the SAME dimension.
+- Every question must be placed in exactly one dimension (use the most relevant one; if a question has two angles use the main one).
+- Do not invent dimensions that no question asked. Do not add current affairs.
+
+QUESTIONS:
+${list.map((q, i) => `[${i + 1}] (${q.year}${q.marks ? ', ' + q.marks + 'm' : ''}) ${String(q.question).replace(/\s+/g, ' ').slice(0, 600)}`).join('\n')}
+
+Reply ONLY with a JSON array: [{"dimension":"...","q":[1,4]}]  (q = the question numbers shown in square brackets)`;
+        const arr = await aiArr(prompt), used = new Set(), items = [];
+                    arr.forEach(a => { if (!a || !a.dimension || !Array.isArray(a.q)) return; const ids = a.q.map(n => list[Number(n) - 1]).filter(Boolean).filter(q => !used.has(q.id)).map(q => { used.add(q.id); return q.id; }); if (ids.length) items.push({ dimension: String(a.dimension).trim(), ids }); });
+                    list.forEach(q => { if (!used.has(q.id)) { const own = String(q.tag.dimension || 'Other').trim() || 'Other'; const ex = items.find(i => norm(i.dimension) === norm(own)); if (ex) ex.ids.push(q.id); else items.push({ dimension: own, ids: [q.id] }); } });
+                    items.sort((a, b) => b.ids.length - a.ids.length);
+                    dimStore[key] = { items, n: qs.length, ts: Date.now() }; saveJ(LS_DIM, dimStore);
+    }
+    async function essaySuggestCore(th) {   // one Essay theme: other angles worth preparing (throws on failure)
+        const qs = mainQs('ESSAY').filter(q => q.tag && q.tag.subject === th);
+        const prompt = `You are a senior UPSC Essay mentor. Theme: "${th}".
+Essay topics UPSC has ALREADY asked under this theme (year: angle - topic):
+${qs.length ? qs.map(q => `${q.year}: ${q.tag.dimension || '?'} - ${String(q.question).replace(/\s+/g, ' ').slice(0, 160)}`).join('\n') : '(nothing asked yet)'}
+
+List 6 to 8 OTHER angles of this theme that could come in the Essay paper and are not repeats. For each give:
+- dimension: 2-6 words
+- why: one short line in plain English on how the topic could be worded
+- kind: "abstract" (quote / philosophy) or "ca" (contemporary issue)
+- hook: for a contemporary angle, a real recent example, report or event you are SURE about (one short phrase); otherwise a thinker, book or historical example worth using; if unsure, an empty string. Never invent anything.
+Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"abstract","hook":""}]`;
+        const items = (await aiArr(prompt)).filter(i => i && i.dimension).slice(0, 10).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: i.kind === 'ca' ? 'ca' : 'abstract', hook: String(i.hook || '') }));
+            if (!items.length) throw new Error('No angles returned.');
+            sug['ESSAY|' + th] = { items, ts: Date.now() }; saveJ(LS_SUG, sug);
+    }
+    function dimStatus(p) {
+        const all = mainQs(p), tagged = all.filter(q => q.tag), res = { p, n: all.length, tagged: tagged.length, topics: 0, ready: 0, missing: 0, stale: 0, noAngle: 0, by: [] };
+        if (p === 'ESSAY') {
+            const ent = { name: 'Themes without "other angles" yet', miss: 0, tot: 0, jobs: [] };
+            ESSAY_THEMES.forEach(th => { res.topics++; ent.tot++; if (sug['ESSAY|' + th] && sug['ESSAY|' + th].items) res.ready++; else { res.missing++; ent.miss++; ent.jobs.push({ essay: th, label: th }); } });
+            res.noAngle = tagged.filter(q => !String(q.tag.dimension || '').trim()).length;
+            if (ent.miss) res.by.push(ent);
+            return res;
+        }
+        subjectsOf(p).forEach(sb => {
+            const qs = tagged.filter(q => q.tag.subject === sb.name), groups = {};
+            qs.forEach(q => { const t = (sb.topics.find(x => norm(x) === norm(q.tag.topic)) || 'Other / not matched to a topic'); (groups[t] = groups[t] || []).push(q); });
+            const ent = { name: sb.name, miss: 0, tot: 0, jobs: [] };
+            Object.entries(groups).forEach(([t, g]) => {
+                const D = dimStore[dimKey(p, sb.name, t)]; ent.tot++; res.topics++;
+                if (D && D.n === g.length) res.ready++; else { if (D) res.stale++; else res.missing++; ent.miss++; ent.jobs.push({ p, sb, t, qs: g, label: sb.name + ' > ' + t }); }
+            });
+            if (ent.tot) res.by.push(ent);
+        });
+        return res;
+    }
+    function dimPanel() {
+        const rows = DIM_PAPERS.map(dimStatus).filter(r => r.n || r.p !== 'GS4');
+        const todo = rows.reduce((n, r) => n + r.missing + r.stale, 0), busy = ui.allBusy;
+        let h = `<div class="bg-card p-3 rounded-xl border border-violet-500/30 text-xs text-gray-300 space-y-2"><div class="flex flex-wrap items-center gap-3"><div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Dimensions coverage - all papers</div>
+            <span class="ml-auto flex flex-wrap items-center gap-3"><span class="text-violet-300">${esc(ui.allMsg || '')}</span>${busy ? '<button type="button" data-ms="dimstopall" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>' : `<button type="button" data-ms="dimbuildall" class="px-3 py-1.5 bg-violet-700 hover:bg-violet-600 text-white rounded-lg font-bold" ${(todo && !ui.dimBusy) ? '' : 'disabled style="opacity:.5"'}><i class="fa-solid fa-layer-group"></i> Build all missing dimensions${todo ? ' (' + todo + ')' : ''}</button>`}</span></div>
+            <div class="overflow-x-auto"><table class="w-full"><thead><tr class="text-gray-400 text-left"><th class="font-normal pr-3">Paper</th><th class="font-normal pr-3">Questions</th><th class="font-normal pr-3">Tagged</th><th class="font-normal pr-3">Topics / themes</th><th class="font-normal pr-3">Ready</th><th class="font-normal pr-3">Missing</th><th class="font-normal">Outdated</th></tr></thead><tbody>`;
+        rows.forEach(r => {
+            const nm = r.p === 'ESSAY' ? 'Essay (18 themes)' : r.p;
+            const st = !r.n ? '<span class="text-gray-500">no questions saved</span>' : (!r.topics ? '<span class="text-amber-300">tag the questions first</span>' : '');
+            h += `<tr class="border-t border-gray-700/40"><td class="py-1.5 pr-3 text-gray-100 font-semibold">${esc(nm)}</td><td class="pr-3">${r.n}</td><td class="pr-3 ${r.n > r.tagged ? 'text-amber-300' : ''}">${r.tagged}</td><td class="pr-3">${r.topics || '-'}</td><td class="pr-3 text-emerald-300 font-bold">${r.ready}</td><td class="pr-3 ${r.missing ? 'text-amber-300 font-bold' : ''}">${r.missing}</td><td class="${r.stale ? 'text-sky-300 font-bold' : ''}">${r.stale}</td></tr>`;
+            if (st) h += `<tr><td></td><td colspan="6">${st}</td></tr>`;
+            if (r.n > r.tagged) h += `<tr><td></td><td colspan="6" class="text-amber-300">${r.n - r.tagged} question${r.n - r.tagged === 1 ? '' : 's'} not tagged yet: choose this paper above and press the Tag button first.</td></tr>`;
+            if (r.p === 'ESSAY' && r.noAngle) h += `<tr><td></td><td colspan="6" class="text-amber-300">${r.noAngle} essay${r.noAngle === 1 ? '' : 's'} without an angle: press Tag (or Re-tag) for the Essay paper.</td></tr>`;
+            const miss = r.by.filter(b => b.miss);
+            if (miss.length) h += `<tr><td></td><td colspan="6" class="text-gray-400 pb-1">Missing in: ${miss.map(b => r.p === 'ESSAY' ? esc(b.miss + ' of ' + b.tot + ' themes') : esc(b.name) + ' (' + b.miss + '/' + b.tot + ')').join(', ')}</td></tr>`;
+        });
+        return h + '</tbody></table></div><div class="text-gray-500">"Ready" = dimensions saved for that topic and still matching its questions. Outdated = questions of the topic changed after the dimensions were built.</div></div>';
+    }
+    async function buildAllMissing() {
+        if (ui.allBusy || ui.dimBusy) return;
+        const jobs = []; DIM_PAPERS.forEach(p => dimStatus(p).by.forEach(b => b.jobs.forEach(j => jobs.push(j))));
+        if (!jobs.length) { pop({ title: 'Nothing missing', type: 'ok', html: '<div>Every topic that has questions already has its dimensions. If a paper shows "not tagged", tag it first.</div>' }); return; }
+        const total = jobs.length; let done = 0; const failed = [];
+        ui.allBusy = true; ui.allStop = false; ui.allMsg = `Building 0 / ${total}...`; refresh();
+        const worker = async () => {
+            while (jobs.length && !ui.allStop) {
+                const j = jobs.shift(); let ok = false, err = null;
+                for (let a = 0; a < 2 && !ok && !ui.allStop; a++) { try { if (j.essay) await essaySuggestCore(j.essay); else await buildTopicDims(j.p, j.sb, j.t, j.qs); ok = true; } catch (e) { err = e; await sleep(1500); } }
+                if (ok) done++; else if (!ui.allStop) failed.push({ label: j.label, err: String((err && err.message) || err).slice(0, 120) });
+                ui.allMsg = `Building ${done + failed.length} / ${total}...` + (failed.length ? ` (${failed.length} failed)` : ''); refresh();
+            }
+        };
+        await Promise.all(Array.from({ length: 5 }, worker));
+        const stopped = ui.allStop; ui.allBusy = false; ui.allStop = false; ui.allMsg = (stopped ? 'Stopped. ' : '') + `${done} built` + (failed.length ? `, ${failed.length} failed - press the button again to retry them` : '');
+        refresh();
+        pop({ title: stopped ? 'Stopped' : (failed.length ? 'Some topics could not be built' : 'Dimensions ready'), type: failed.length ? 'warn' : 'ok', html: `<div>${done} of ${total} built.</div>` + (failed.length ? `<div class="text-xs text-gray-400 mt-1">Failed (try again in a minute): ${failed.slice(0, 6).map(f => esc(f.label)).join('; ')}${failed.length > 6 ? '...' : ''}<br>Last error: ${esc(failed[failed.length - 1].err)}</div>` : '<div class="text-xs text-gray-400 mt-1">Open a paper > Analysis, or use "Download notes".</div>') });
     }
 
     // ---------- Essay: 18 themes ----------
