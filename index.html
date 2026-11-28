@@ -5884,7 +5884,7 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
     }
 
     // ---------- viewer (Insights > Mains PYQ Analyser) ----------
-    function refresh() { const r = document.getElementById('mains-root'); if (r) render(r); }
+    function refresh() { const r = document.getElementById('mains-root'); if (r) (window.mainsRender || render)(r); }
     window.mainsRefresh = refresh;
     window.mainsRender = function (el) { render(el); };
     function chips(q) {
@@ -5997,7 +5997,334 @@ ${paper === 'ESSAY' ? '- ESSAY paper: Section A and Section B each list several 
         } catch (e) { showPopup({ title: 'Could not import', type: 'error', html: `<div>${esc(e.message)}</div>` }); }
         refresh();
     }
+    window.mainsApi = { all: () => db, PAPERS, isLoaded: () => loaded, put: async list => { await putMany(list); list.forEach(r => { const i = db.findIndex(d => d.id === r.id); if (i >= 0) db[i] = r; else db.push(r); }); } };
     load();
+})();
+</script>
+
+<script>
+// ===== MAINS SYLLABUS & ANALYSIS (Insights > Mains PYQ Analyser: Questions | Syllabus | Analysis) =====
+(function () {
+    const esc = s => String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const GS = ['GS1', 'GS2', 'GS3', 'GS4'];
+    const GS_NAME = { GS1: 'GS1 - History, Geography & Society', GS2: 'GS2 - Polity, Governance, Social Justice & IR', GS3: 'GS3 - Economy, Technology, Environment & Security', GS4: 'GS4 - Ethics, Integrity & Aptitude' };
+    const NATURE = { static: ['Static - no current affairs needed', 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'], mixed: ['Mixed - static + current affairs', 'text-amber-300 border-amber-500/40 bg-amber-500/10'], dynamic: ['Dynamic - current affairs heavy', 'text-rose-300 border-rose-500/40 bg-rose-500/10'] };
+    const QT = { static: ['Static', 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10'], medium: ['Medium (static, inspired by current affairs)', 'text-amber-300 border-amber-500/40 bg-amber-500/10'], dynamic: ['Dynamic (current affairs)', 'text-rose-300 border-rose-500/40 bg-rose-500/10'] };
+    const QT_SHORT = { static: 'Static', medium: 'Medium', dynamic: 'Dynamic' };
+    const LS_SYL = 'mains_syllabus_v1', LS_SUG = 'mains_suggest_v1';
+    const loadJ = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v && typeof v === 'object' ? v : d; } catch (e) { return d; } };
+    const saveJ = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } };
+    let syl = loadJ(LS_SYL, {}), sug = loadJ(LS_SUG, {});
+    const ui = { tab: 'questions', paper: 'GS2', subject: '', open: {}, editQ: null, busy: '', tagging: false, stop: false, progress: '', synPaper: '' };
+    const api = () => window.mainsApi;
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const norm = x => String(x || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const subjectsOf = p => ((syl[p] && syl[p].subjects) || []);
+    const mainQs = p => (api() ? api().all() : []).filter(q => q.paper === p);
+    function matchName(list, s) {
+        const n = norm(s); if (!n) return null;
+        let f = list.find(x => norm(x) === n); if (f) return f;
+        f = list.find(x => norm(x).includes(n) || n.includes(norm(x))); return f || null;
+    }
+    function jsonFrom(text, open, close) {
+        const a = text.indexOf(open), b = text.lastIndexOf(close);
+        if (a < 0 || b <= a) throw new Error('The AI did not return the expected list.');
+        return JSON.parse(text.slice(a, b + 1).replace(/,\s*([\]}])/g, '$1'));
+    }
+    const ai = (prompt, maxTokens) => window.aiGenerate({ id: 'mains_tool', exam: 'Mains', year: '' }, { prompt, noSearch: true, maxTokens: maxTokens || 8192 });
+    const pop = o => (window.showPopup || (() => {}))(o);
+    function askYes(title, html, label, onYes) {
+        pop({ title, type: 'warn', html: html + `<div class="flex gap-2"><button type="button" id="ms-yes" class="px-3 py-1.5 bg-violet-600 text-white rounded-lg text-xs font-bold">${esc(label)}</button><button type="button" id="ms-no" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
+            onOpen: (box, close) => { box.querySelector('#ms-no').onclick = close; box.querySelector('#ms-yes').onclick = () => { close(); onYes(); }; } });
+    }
+    const errText = e => { try { return window.explainError ? (window.explainError(e.message || String(e)).why || e.message) : (e.message || String(e)); } catch (_) { return e.message || String(e); } };
+
+    // ---------- wrapper: tab bar above the existing question viewer ----------
+    function install() {
+        const orig = window.mainsRender; if (!orig || orig.__wrapped) return !!(orig && orig.__wrapped);
+        const w = function (el) {
+            if (!el) return;
+            const tb = (k, t, ic) => `<button type="button" data-ms-tab="${k}" class="px-3 py-1.5 rounded-lg border font-semibold ${ui.tab === k ? 'bg-violet-600 text-white border-violet-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid ${ic}"></i> ${t}</button>`;
+            el.innerHTML = `<div class="flex flex-wrap gap-2 text-xs mb-3">${tb('questions', 'Questions', 'fa-list')}${tb('syllabus', 'Syllabus (mark static / dynamic)', 'fa-book-open')}${tb('analysis', 'Analysis', 'fa-chart-pie')}</div><div id="ms-body"></div>`;
+            const body = el.querySelector('#ms-body');
+            if (ui.tab === 'questions') orig(body);
+            else if (ui.tab === 'syllabus') renderSyllabus(body);
+            else renderAnalysis(body);
+        };
+        w.__wrapped = true; window.mainsRender = w; return true;
+    }
+    document.addEventListener('click', e => { const el = e.target.closest('#mains-root'); if (!el) return; onClick(e); });
+    document.addEventListener('change', e => { const el = e.target.closest('#ms-body [data-mc]'); if (el) onChange(e); });
+    const refresh = () => window.mainsRefresh && window.mainsRefresh();
+
+    // ---------- Syllabus tab ----------
+    function renderSyllabus(el) {
+        const p = ui.paper; const S = syl[p] || { raw: '', subjects: [] };
+        const sel = 'bg-black/30 border border-gray-600 rounded-lg px-2 py-1';
+        let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-3 text-xs text-gray-300">
+            <div class="flex flex-wrap items-center gap-3"><label class="flex items-center gap-1">Paper <select data-mc="paper" class="${sel}">${GS.map(k => `<option value="${k}" ${k === p ? 'selected' : ''}>${esc(GS_NAME[k])}</option>`).join('')}</select></label>
+            <span class="text-gray-400">Step 1: paste the syllabus of this paper. Step 2: let the AI split it into subjects and topics. Step 3: mark each subject as Static / Mixed / Dynamic.</span></div>
+            <textarea id="ms-raw" rows="6" placeholder="Paste the official syllabus text of ${esc(p)} here..." class="w-full bg-black/40 border border-gray-600 rounded-xl p-3 text-xs text-gray-200 focus:outline-none focus:border-violet-500">${esc(S.raw || '')}</textarea>
+            <div class="flex flex-wrap gap-3 items-center"><button type="button" data-ms="split" class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-bold" ${ui.busy ? 'disabled' : ''}><i class="fa-solid fa-wand-magic-sparkles"></i> Split into subjects &amp; topics (AI)</button>
+            <button type="button" data-ms="addsubj" class="text-sky-300 hover:underline"><i class="fa-solid fa-plus"></i> Add a subject by hand</button>
+            <span class="text-violet-300">${esc(ui.busy)}</span></div></div>`;
+        if (!S.subjects || !S.subjects.length) h += `<div class="text-xs text-gray-400 p-4">No subjects yet for ${esc(p)}. Paste the syllabus above and press the AI button.</div>`;
+        else h += S.subjects.map((sb, i) => `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-2 text-xs" data-sbi="${i}">
+            <div class="flex flex-wrap items-center gap-3"><input data-mc="sname" data-i="${i}" value="${esc(sb.name)}" class="bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100 font-semibold w-64">
+            <select data-mc="snature" data-i="${i}" class="${sel}">${Object.entries(NATURE).map(([k, v]) => `<option value="${k}" ${sb.nature === k ? 'selected' : ''}>${esc(v[0])}</option>`).join('')}</select>
+            <span class="text-gray-500">${sb.topics.length} topics</span><button type="button" data-ms="delsubj" data-i="${i}" class="ml-auto text-red-300 hover:underline">Delete subject</button></div>
+            <textarea data-mc="stopics" data-i="${i}" rows="${Math.min(12, Math.max(3, sb.topics.length))}" class="w-full bg-black/40 border border-gray-600 rounded-lg p-2 text-gray-200" placeholder="One topic per line">${esc(sb.topics.join('\n'))}</textarea></div>`).join('');
+        el.innerHTML = h;
+    }
+
+    // ---------- Analysis tab ----------
+    function stats(qs) {
+        const r = { n: 0, marks: 0, static: 0, medium: 0, dynamic: 0 };
+        qs.forEach(q => { r.n++; r.marks += Number(q.marks) || 0; const t = q.tag && q.tag.qtype; if (r[t] !== undefined) r[t]++; });
+        return r;
+    }
+    const pct = (a, b) => b ? Math.round(100 * a / b) : 0;
+    const bar = r => { const t = r.static + r.medium + r.dynamic; if (!t) return '<span class="text-gray-600">-</span>'; return `<span class="inline-flex w-32 h-2 rounded overflow-hidden align-middle bg-gray-800" title="Static ${r.static} / Medium ${r.medium} / Dynamic ${r.dynamic}"><span style="width:${pct(r.static, t)}%" class="bg-emerald-500"></span><span style="width:${pct(r.medium, t)}%" class="bg-amber-400"></span><span style="width:${pct(r.dynamic, t)}%" class="bg-rose-500"></span></span> <span class="text-gray-400">${pct(r.static, t)}/${pct(r.medium, t)}/${pct(r.dynamic, t)}%</span>`; };
+    const yrChips = qs => [...new Set(qs.map(q => q.year))].sort((a, b) => b - a).map(y => `<span class="px-1.5 py-0.5 rounded bg-gray-700/70 text-gray-200">${y}</span>`).join(' ');
+    const chip = (t, cls) => `<span class="px-1.5 py-0.5 rounded border ${cls}">${esc(t)}</span>`;
+
+    function renderAnalysis(el) {
+        const p = ui.paper, subs = subjectsOf(p), all = mainQs(p);
+        const sel = 'bg-black/30 border border-gray-600 rounded-lg px-2 py-1';
+        const untagged = all.filter(q => !q.tag).length;
+        let h = `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-300 bg-card p-3 rounded-xl border border-gray-700/60">
+            <label class="flex items-center gap-1">Paper <select data-mc="paper" class="${sel}">${GS.map(k => `<option value="${k}" ${k === p ? 'selected' : ''}>${esc(GS_NAME[k])}</option>`).join('')}</select></label>
+            <span><b class="text-violet-300">${all.length}</b> questions &middot; <b class="text-emerald-300">${all.length - untagged}</b> tagged &middot; <b class="${untagged ? 'text-amber-300' : 'text-gray-400'}">${untagged}</b> not tagged</span>
+            <span class="ml-auto flex flex-wrap gap-3 items-center"><span class="text-violet-300">${esc(ui.progress)}</span>
+            ${ui.tagging ? '<button type="button" data-ms="stoptag" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>' : `<button type="button" data-ms="tag" ${(!subs.length || !all.length) ? 'disabled style="opacity:.5"' : ''} class="px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-lg font-bold"><i class="fa-solid fa-tags"></i> Tag ${untagged ? untagged + ' new' : 'all'} questions (AI)</button>${all.length - untagged ? '<button type="button" data-ms="retag" class="text-amber-300 hover:underline">Re-tag everything</button>' : ''}`}</span></div>`;
+        if (!subs.length) { el.innerHTML = h + `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300 space-y-2"><div>First add the syllabus of ${esc(p)} in the <b>Syllabus</b> tab and mark each subject as Static / Mixed / Dynamic.</div><button type="button" data-ms-tab="syllabus" class="px-3 py-1.5 bg-violet-600 text-white rounded-lg font-bold">Open Syllabus tab</button></div>`; return; }
+        if (!all.length) { el.innerHTML = h + `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-300">No ${esc(p)} questions saved yet. Upload them from Import &amp; AI Tagger &gt; Mains.</div>`; return; }
+        // paper overview
+        const tagged = all.filter(q => q.tag);
+        h += `<div class="bg-card p-3 rounded-xl border border-gray-700/60 overflow-x-auto"><div class="text-[11px] font-bold text-gray-400 uppercase tracking-wider mb-2">${esc(p)} - subject-wise picture (click a subject to open it)</div>
+            <table class="text-xs w-full"><thead><tr class="text-gray-400 text-left"><th class="font-normal pr-3">Subject</th><th class="font-normal pr-3">You marked</th><th class="font-normal pr-3">Questions</th><th class="font-normal pr-3">Marks</th><th class="font-normal pr-3">Static / Medium / Dynamic (what UPSC actually asked)</th><th class="font-normal">Current affairs needed?</th></tr></thead><tbody>`;
+        subs.forEach((sb, i) => {
+            const qs = tagged.filter(q => q.tag.subject === sb.name), r = stats(qs), t = r.static + r.medium + r.dynamic, ca = pct(r.medium + r.dynamic, t);
+            let verdict = '<span class="text-gray-500">tag questions first</span>';
+            if (t) {
+                const need = ca === 0 ? 'No' : ca < 15 ? 'Very little' : ca < 40 ? 'Some' : 'Yes';
+                const mism = (sb.nature === 'static' && ca >= 20) ? ' <span class="text-amber-300">- you marked Static, but ' + ca + '% questions used current affairs</span>' : (sb.nature !== 'static' && ca === 0 && t >= 5) ? ' <span class="text-sky-300">- no current-affairs question seen in ' + t + ' questions</span>' : '';
+                verdict = `<b class="${ca >= 40 ? 'text-rose-300' : ca >= 15 ? 'text-amber-300' : 'text-emerald-300'}">${need}</b> (${ca}%)${mism}`;
+            }
+            h += `<tr class="border-t border-gray-700/40 cursor-pointer hover:bg-white/5 ${ui.subject === sb.name ? 'bg-violet-500/10' : ''}" data-ms="subject" data-s="${esc(sb.name)}"><td class="py-1.5 pr-3 text-gray-100 font-semibold">${esc(sb.name)}</td><td class="pr-3">${chip(NATURE[sb.nature][0].split(' - ')[0], NATURE[sb.nature][1])}</td><td class="pr-3">${r.n}</td><td class="pr-3">${r.marks || '-'}</td><td class="pr-3">${bar(r)}</td><td>${verdict}</td></tr>`;
+        });
+        const other = tagged.filter(q => !subs.some(s => s.name === q.tag.subject));
+        if (other.length) h += `<tr class="border-t border-gray-700/40"><td class="py-1.5 pr-3 text-gray-400">Not matched to a subject</td><td></td><td>${other.length}</td><td colspan="3" class="text-gray-500">Open the question and fix its subject (see below)</td></tr>`;
+        h += '</tbody></table></div>';
+        // subject detail
+        const sb = subs.find(s => s.name === ui.subject);
+        if (sb) h += subjectDetail(p, sb, tagged);
+        else h += '<div class="text-xs text-gray-400 p-3">Click a subject above to see which syllabus parts were asked, which were never asked, and in what way.</div>';
+        el.innerHTML = h;
+    }
+
+    function subjectDetail(p, sb, tagged) {
+        const qs = tagged.filter(q => q.tag.subject === sb.name);
+        const years = (api().all().map(q => q.year)); const lastY = Math.max(...years, 0);
+        const rows = sb.topics.map(t => ({ t, qs: qs.filter(q => norm(q.tag.topic) === norm(t)) }));
+        const known = new Set(sb.topics.map(norm));
+        const strays = qs.filter(q => !known.has(norm(q.tag.topic)));
+        if (strays.length) rows.push({ t: 'Other / not matched to a topic', qs: strays, stray: true });
+        const asked = rows.filter(r => r.qs.length).length, never = rows.filter(r => !r.qs.length && !r.stray).length;
+        let h = `<div class="bg-card p-4 rounded-xl border border-violet-500/30 space-y-3 text-xs text-gray-300">
+            <div class="flex flex-wrap items-center gap-3"><div class="text-sm font-bold text-gray-100">${esc(sb.name)}</div>${chip(NATURE[sb.nature][0], NATURE[sb.nature][1])}
+            <span><b class="text-violet-300">${qs.length}</b> questions &middot; <b class="text-emerald-300">${asked}</b> topics asked &middot; <b class="${never ? 'text-amber-300' : 'text-gray-400'}">${never}</b> never asked</span>
+            <button type="button" data-ms="copydims" data-s="${esc(sb.name)}" class="ml-auto text-sky-300 hover:underline"><i class="fa-solid fa-copy"></i> Copy dimension checklist</button></div>
+            ${sb.nature === 'static' ? '<div class="text-emerald-300">Static subject: dimensions below are only from the syllabus and past questions. No current affairs needed.</div>' : ''}
+            <table class="w-full"><thead><tr class="text-gray-400 text-left"><th class="font-normal pr-3">Syllabus topic</th><th class="font-normal pr-3">Qs</th><th class="font-normal pr-3">Years asked</th><th class="font-normal pr-3">Type</th><th class="font-normal">Status</th></tr></thead><tbody>`;
+        rows.sort((a, b) => (b.qs.length - a.qs.length)).forEach(r => {
+            const last = r.qs.length ? Math.max(...r.qs.map(q => q.year)) : 0, key = p + '|' + sb.name + '|' + r.t, open = !!ui.open[key], st = stats(r.qs);
+            const status = !r.qs.length ? '<span class="text-amber-300">Never asked</span>' : (lastY - last >= 5 ? `<span class="text-sky-300">Not asked since ${last}</span>` : `<span class="text-gray-400">Last: ${last}</span>`);
+            h += `<tr class="border-t border-gray-700/40 cursor-pointer hover:bg-white/5" data-ms="topic" data-k="${esc(key)}"><td class="py-1.5 pr-3 text-gray-100">${open ? '&#9662;' : '&#9656;'} ${esc(r.t)}</td><td class="pr-3">${r.qs.length || '-'}</td><td class="pr-3">${yrChips(r.qs) || '<span class="text-gray-600">-</span>'}</td><td class="pr-3">${bar(st)}</td><td>${status}</td></tr>`;
+            if (open) h += `<tr><td colspan="5" class="pb-3">${topicDetail(p, sb, r)}</td></tr>`;
+        });
+        return h + '</tbody></table></div>';
+    }
+
+    function topicDetail(p, sb, r) {
+        const by = {}; r.qs.forEach(q => { const d = String(q.tag.dimension || 'General').trim() || 'General'; const k = norm(d); (by[k] = by[k] || { d, qs: [] }).qs.push(q); });
+        const dims = Object.values(by).sort((a, b) => b.qs.length - a.qs.length);
+        let h = '<div class="ml-4 space-y-2 border-l border-gray-700 pl-3">';
+        if (!dims.length) h += '<div class="text-gray-500">No question has been asked from this topic in the saved papers.</div>';
+        h += dims.map(g => `<div class="bg-black/20 rounded-lg p-2"><div class="flex flex-wrap items-center gap-2"><b class="text-gray-100">${esc(g.d)}</b><span class="text-gray-500">${g.qs.length} question${g.qs.length > 1 ? 's' : ''}</span>${[...new Set(g.qs.map(q => q.tag.qtype))].map(t => QT[t] ? chip(QT_SHORT[t], QT[t][1]) : '').join(' ')}<span class="ml-auto">${yrChips(g.qs)}</span></div>
+            ${g.qs.slice().sort((a, b) => b.year - a.year).map(q => ui.editQ === q.id ? editForm(p, q) : `<div class="mt-1.5 flex gap-2 items-start"><div class="flex-1"><span class="text-gray-500">${q.year} Q${esc(q.qNo)}${q.marks ? ' &middot; ' + q.marks + 'm' : ''}${q.tag.directive ? ' &middot; ' + esc(q.tag.directive) : ''}:</span> <span class="text-gray-300">${esc(q.question.length > 260 ? q.question.slice(0, 260) + '...' : q.question)}</span></div><button type="button" data-ms="qedit" data-id="${esc(q.id)}" class="text-sky-300 hover:underline shrink-0">Edit tag</button></div>`).join('')}</div>`).join('');
+        // AI suggestions for what to prepare
+        const sk = p + '|' + sb.name + '|' + r.t, sg = sug[sk];
+        h += `<div class="pt-1"><button type="button" data-ms="suggest" data-k="${esc(sk)}" class="px-3 py-1.5 bg-sky-700 hover:bg-sky-600 text-white rounded-lg font-bold" ${ui.busy ? 'disabled' : ''}><i class="fa-solid fa-lightbulb"></i> ${sg ? 'Refresh' : 'Suggest'} other dimensions to prepare (AI)</button> <span class="text-violet-300">${ui.busy === sk ? 'Thinking...' : ''}</span></div>`;
+        if (sg && sg.items) h += `<div class="bg-sky-500/5 border border-sky-500/30 rounded-lg p-2 space-y-1"><div class="text-sky-300 font-semibold">Dimensions not asked yet - worth preparing${sb.nature === 'static' ? ' (static only)' : ''}</div>${sg.items.map(i => `<div><b class="text-gray-100">${esc(i.dimension)}</b> ${i.kind === 'ca' ? chip('Current affairs', QT.dynamic[1]) : chip('Static', QT.static[1])} <span class="text-gray-400">${esc(i.why || '')}</span>${i.hook ? ` <span class="text-amber-300">Link: ${esc(i.hook)}</span>` : ''}</div>`).join('')}<div class="text-[10px] text-gray-500">Written by AI from its own knowledge, not from a live news feed. Treat the current-affairs links as hints and verify them.</div></div>`;
+        return h + '</div>';
+    }
+
+    function editForm(p, q) {
+        const subs = subjectsOf(p), sel = 'bg-black/40 border border-gray-600 rounded px-2 py-1 text-gray-100';
+        const opts = subs.map(sb => `<optgroup label="${esc(sb.name)}">${sb.topics.map(t => `<option value="${esc(sb.name + '||' + t)}" ${(q.tag.subject === sb.name && norm(q.tag.topic) === norm(t)) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</optgroup>`).join('');
+        return `<div class="mt-1.5 p-2 rounded bg-violet-500/10 border border-violet-500/30 space-y-1.5" data-qe="${esc(q.id)}"><div class="text-gray-400">${q.year} Q${esc(q.qNo)}: ${esc(q.question.slice(0, 120))}...</div>
+            <div class="flex flex-wrap gap-2"><select id="qe-topic" class="${sel}">${opts}</select>
+            <select id="qe-type" class="${sel}">${Object.entries(QT).map(([k, v]) => `<option value="${k}" ${q.tag.qtype === k ? 'selected' : ''}>${esc(v[0])}</option>`).join('')}</select>
+            <input id="qe-dim" value="${esc(q.tag.dimension || '')}" placeholder="Dimension (e.g. fiscal federalism)" class="${sel} w-60"></div>
+            <div class="flex gap-3"><button type="button" data-ms="qsave" data-id="${esc(q.id)}" class="px-3 py-1 bg-emerald-600 text-white rounded font-bold">Save</button><button type="button" data-ms="qcancel" class="px-3 py-1 bg-slate-600 text-white rounded font-bold">Cancel</button></div></div>`;
+    }
+
+    // ---------- actions ----------
+    function onChange(e) {
+        const t = e.target, m = t.dataset.mc, i = Number(t.dataset.i);
+        if (m === 'paper') { ui.paper = t.value; ui.subject = ''; ui.editQ = null; refresh(); return; }
+        const S = syl[ui.paper]; if (!S) return;
+        if (m === 'sname') S.subjects[i].name = t.value.trim() || S.subjects[i].name;
+        else if (m === 'snature') S.subjects[i].nature = t.value;
+        else if (m === 'stopics') S.subjects[i].topics = t.value.split('\n').map(x => x.trim()).filter(Boolean);
+        saveJ(LS_SYL, syl);
+        if (m === 'stopics') refresh();
+    }
+    async function onClick(e) {
+        const tb = e.target.closest('[data-ms-tab]'); if (tb) { ui.tab = tb.dataset.msTab; refresh(); return; }
+        const b = e.target.closest('[data-ms]'); if (!b) return; const a = b.dataset.ms;
+        if (a === 'subject') { ui.subject = b.dataset.s; refresh(); }
+        else if (a === 'topic') { const k = b.dataset.k; ui.open[k] = !ui.open[k]; refresh(); }
+        else if (a === 'addsubj') { const S = syl[ui.paper] = syl[ui.paper] || { raw: '', subjects: [] }; S.subjects.push({ name: 'New subject', nature: 'mixed', topics: [] }); saveJ(LS_SYL, syl); refresh(); }
+        else if (a === 'delsubj') { const S = syl[ui.paper]; const i = Number(b.dataset.i); if (S) askYes('Delete this subject?', `<div>Delete <b>${esc(S.subjects[i].name)}</b> from the ${esc(ui.paper)} syllabus? Question tags stay as they are.</div>`, 'Delete', () => { S.subjects.splice(i, 1); saveJ(LS_SYL, syl); refresh(); }); }
+        else if (a === 'split') await splitSyllabus();
+        else if (a === 'tag') await tagQuestions(false);
+        else if (a === 'retag') askYes('Tag everything again?', '<div>Every question of this paper will be tagged again. Tags you edited by hand will be replaced too.</div>', 'Tag again', () => tagQuestions(true));
+        else if (a === 'stoptag') { ui.stop = true; ui.progress = 'Stopping after the current batch...'; refresh(); }
+        else if (a === 'qedit') { ui.editQ = b.dataset.id; refresh(); }
+        else if (a === 'qcancel') { ui.editQ = null; refresh(); }
+        else if (a === 'qsave') {
+            const q = api().all().find(x => x.id === b.dataset.id); if (!q) return;
+            const [subject, topic] = String(document.getElementById('qe-topic').value).split('||');
+            const nq = { ...q, tag: { ...q.tag, subject, topic, qtype: document.getElementById('qe-type').value, dimension: document.getElementById('qe-dim').value.trim(), by: 'you' } };
+            try { await api().put([nq]); } catch (err) { pop({ title: 'Could not save', type: 'error', html: `<div>${esc(err.message)}</div>` }); return; }
+            ui.editQ = null; refresh();
+        }
+        else if (a === 'suggest') await suggest(b.dataset.k);
+        else if (a === 'copydims') copyDims(b.dataset.s);
+    }
+
+    async function splitSyllabus() {
+        const raw = (document.getElementById('ms-raw') || {}).value || '';
+        if (raw.trim().length < 60) { pop({ title: 'Paste the syllabus first', type: 'warn', html: '<div>Paste the syllabus text of this paper in the box, then press the button.</div>' }); return; }
+        const p = ui.paper; syl[p] = syl[p] || { raw: '', subjects: [] }; syl[p].raw = raw; saveJ(LS_SYL, syl);
+        ui.busy = 'The AI is reading the syllabus...'; refresh();
+        const prompt = `You are a UPSC expert. Below is the official syllabus of UPSC Mains ${p}.
+Split it into SUBJECTS (for example: Polity, Governance, Social Justice, International Relations - or History, Geography, Society - or Economy, Science & Tech, Environment, Security, Disaster Management) and, inside each subject, into small TOPICS.
+Rules:
+- Cover every part of the syllabus text; do not invent topics that are not in it.
+- A topic is one short syllabus item (2-8 words), for example "Federalism and Centre-State relations", "Role of Governor", "Urbanisation".
+- 4 to 30 topics per subject. Keep the syllabus wording where possible.
+- Do not repeat the same topic in two subjects.
+Reply ONLY with JSON: {"subjects":[{"name":"...","topics":["...","..."]}]}
+
+SYLLABUS:
+${raw.slice(0, 12000)}`;
+        try {
+            const out = await ai(prompt, 8192);
+            const d = jsonFrom(out.text, '{', '}');
+            const subjects = (d.subjects || []).filter(s => s && s.name && Array.isArray(s.topics)).map(s => ({ name: String(s.name).trim(), nature: (syl[p].subjects.find(o => norm(o.name) === norm(s.name)) || {}).nature || 'mixed', topics: s.topics.map(t => String(t).trim()).filter(Boolean) }));
+            if (!subjects.length) throw new Error('The AI returned no subjects.');
+            syl[p].subjects = subjects; saveJ(LS_SYL, syl); ui.busy = '';
+            pop({ title: 'Syllabus split', type: 'ok', html: `<div>${subjects.length} subjects and ${subjects.reduce((n, s) => n + s.topics.length, 0)} topics created for ${esc(p)}.</div><div class="text-xs text-gray-400">Now mark each subject as Static / Mixed / Dynamic. You can rename subjects and edit topics (one per line) any time.</div>` });
+        } catch (e) { ui.busy = ''; pop({ title: 'Could not split the syllabus', type: 'error', html: `<div>${esc(errText(e))}</div><div class="text-xs text-gray-400">Try again in a minute, or press "Add a subject by hand".</div>` }); }
+        refresh();
+    }
+
+    async function tagQuestions(all) {
+        const p = ui.paper, subs = subjectsOf(p); if (!subs.length || ui.tagging) return;
+        const todo = mainQs(p).filter(q => all || !q.tag).sort((a, b) => b.year - a.year);
+        if (!todo.length) return;
+        const BATCH = 8, batches = []; for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
+        const catalog = subs.map((s, i) => `${i + 1}. ${s.name} (${s.nature}): ${s.topics.join(' | ')}`).join('\n');
+        ui.tagging = true; ui.stop = false; let done = 0, fail = 0, tries = new Map(); refresh();
+        const upd = () => { ui.progress = `Tagged ${done} / ${todo.length}${fail ? ' - failed ' + fail : ''}${ui.stop ? ' - stopping...' : ''}`; if (ui.tab === 'analysis' && ui.paper === p) refresh(); };
+        const queue = batches.slice();
+        const worker = async () => {
+            while (queue.length && !ui.stop) {
+                const bt = queue.shift();
+                const prompt = `You are an expert UPSC Mains analyst. Paper: ${p}.
+Syllabus subjects and topics (use these EXACT names):
+${catalog}
+
+For each question give:
+- subject: exact subject name from the list
+- topic: the ONE best matching topic, exact name from that subject
+- dimension: the specific angle the question asks, 2-6 words (e.g. "fiscal federalism", "role of Governor", "gender gap in workforce")
+- type: "static" = answerable from standard syllabus knowledge, no recent event needed; "medium" = a static syllabus topic but framed around or inspired by a recent event, report, judgment or news ("in light of", "recent", a current issue); "dynamic" = mainly about current affairs, a recent scheme, report, event or judgment
+- directive: the first command word (discuss, critically examine, analyse, comment, evaluate...)
+
+QUESTIONS:
+${bt.map((q, i) => `[${i + 1}] (${q.year}${q.marks ? ', ' + q.marks + ' marks' : ''}) ${String(q.question).replace(/\s+/g, ' ').slice(0, 700)}`).join('\n')}
+
+Reply ONLY with a JSON array: [{"n":1,"subject":"","topic":"","dimension":"","type":"static","directive":""}]`;
+                try {
+                    const out = await ai(prompt, 8192);
+                    const arr = jsonFrom(out.text, '[', ']'), recs = [];
+                    arr.forEach(r => {
+                        const q = bt[Number(r.n) - 1]; if (!q) return;
+                        const sb = subs.find(s => norm(s.name) === norm(matchName(subs.map(x => x.name), r.subject) || '')) || null;
+                        const topic = sb ? (matchName(sb.topics, r.topic) || String(r.topic || '').trim()) : String(r.topic || '').trim();
+                        const qt = String(r.type || '').toLowerCase().startsWith('dyn') ? 'dynamic' : String(r.type || '').toLowerCase().startsWith('med') ? 'medium' : 'static';
+                        recs.push({ ...q, tag: { subject: sb ? sb.name : String(r.subject || '').trim(), topic, dimension: String(r.dimension || '').trim(), qtype: qt, directive: String(r.directive || '').trim().toLowerCase(), by: 'ai', ts: Date.now() } });
+                    });
+                    if (!recs.length) throw new Error('Empty tag list');
+                    await api().put(recs); done += recs.length; upd();
+                } catch (e) {
+                    const n = (tries.get(bt) || 0) + 1; tries.set(bt, n);
+                    if (n < 4 && !ui.stop) { queue.push(bt); if (e.kind === 'quota' || e.kind === 'busy') await sleep(Math.min(e.retryMs || 15000, 60000)); else await sleep(3000); }
+                    else { fail += bt.length; upd(); console.warn('[mains tag]', e.message); }
+                }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(6, batches.length) }, worker));
+        ui.tagging = false; const stopped = ui.stop; ui.stop = false;
+        ui.progress = `${stopped ? 'Stopped' : 'Done'}: ${done} tagged${fail ? ', ' + fail + ' failed (press Tag again to retry)' : ''}`; refresh();
+    }
+
+    async function suggest(key) {
+        const [p, subject, topic] = key.split('|'); const sb = subjectsOf(p).find(s => s.name === subject); if (!sb || ui.busy) return;
+        const qs = mainQs(p).filter(q => q.tag && q.tag.subject === subject && norm(q.tag.topic) === norm(topic));
+        ui.busy = key; refresh();
+        const asked = qs.length ? qs.map(q => `${q.year}: ${q.tag.dimension || '?'} (${QT_SHORT[q.tag.qtype] || '?'})`).join('\n') : '(nothing asked yet)';
+        const prompt = `You are a senior UPSC Mains mentor. Paper ${p}, subject "${subject}" (nature marked by the student: ${sb.nature}), syllabus topic "${topic}".
+Dimensions UPSC has ALREADY asked from this topic (year: dimension (type)):
+${asked}
+
+List 6 to 10 OTHER dimensions of this topic that the student should still prepare, which are not repeats of the asked ones. For each give:
+- dimension: 2-6 words
+- why: one short line in plain English on how UPSC could ask it
+- kind: "static" or "ca"${sb.nature === 'static' ? '\nThis subject is STATIC: use kind "static" only and do not mention current affairs.' : ''}
+- hook: ${sb.nature === 'static' ? 'always an empty string' : 'only if kind is "ca": a real recent event, report or judgment you are SURE about (one short phrase), otherwise an empty string. Never invent anything.'}
+Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"static","hook":""}]`;
+        try {
+            const out = await ai(prompt, 4096);
+            const items = jsonFrom(out.text, '[', ']').filter(i => i && i.dimension).slice(0, 12).map(i => ({ dimension: String(i.dimension), why: String(i.why || ''), kind: (sb.nature !== 'static' && i.kind === 'ca') ? 'ca' : 'static', hook: sb.nature === 'static' ? '' : String(i.hook || '') }));
+            if (!items.length) throw new Error('No dimensions returned.');
+            sug[key] = { items, ts: Date.now() }; saveJ(LS_SUG, sug);
+        } catch (e) { pop({ title: 'Could not get suggestions', type: 'error', html: `<div>${esc(errText(e))}</div>` }); }
+        ui.busy = ''; refresh();
+    }
+
+    function copyDims(subject) {
+        const p = ui.paper, sb = subjectsOf(p).find(s => s.name === subject); if (!sb) return;
+        const qs = mainQs(p).filter(q => q.tag && q.tag.subject === subject);
+        let t = `# ${p} - ${subject} (${NATURE[sb.nature][0]})\n`;
+        sb.topics.forEach(tp => {
+            const tq = qs.filter(q => norm(q.tag.topic) === norm(tp)); t += `\n## ${tp}\n`;
+            const by = {}; tq.forEach(q => { const d = q.tag.dimension || 'General'; (by[norm(d)] = by[norm(d)] || { d, y: [] }).y.push(q.year + ' ' + QT_SHORT[q.tag.qtype]); });
+            const dims = Object.values(by); if (!dims.length) t += '- (never asked)\n';
+            dims.forEach(g => { t += `- [ ] ${g.d} - asked: ${g.y.join(', ')}\n`; });
+            const sg = sug[p + '|' + subject + '|' + tp]; if (sg) sg.items.forEach(i => { t += `- [ ] ${i.dimension} - to prepare${i.kind === 'ca' ? ' (CA)' : ''}${i.hook ? ': ' + i.hook : ''}\n`; });
+        });
+        const done = () => pop({ title: 'Copied', type: 'ok', html: '<div>The dimension checklist is copied. Paste it into your notes.</div>' });
+        const manual = () => pop({ title: 'Copy this checklist', type: 'ok', html: `<textarea readonly rows="12" class="w-full bg-black/40 border border-gray-600 rounded p-2 text-xs text-gray-200">${esc(t)}</textarea>` });
+        try { navigator.clipboard.writeText(t).then(done, manual); } catch (e) { manual(); }
+    }
+
+    // wait for the Mains viewer to be ready, then wrap it
+    let tries = 0; const iv = setInterval(() => { if (install() || ++tries > 100) clearInterval(iv); }, 100);
 })();
 </script>
 
