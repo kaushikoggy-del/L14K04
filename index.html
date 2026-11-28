@@ -4639,9 +4639,9 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
         return fixed;
     }
     function nextVerifyTarget() {
-        while (verifyPrio.length) { const id = verifyPrio.shift(); const q = pyqDatabase.find(x => x.id === id); if (q && isUnverified(explMap[id])) return q; }
+        while (verifyPrio.length) { const id = verifyPrio.shift(); const q = pyqDatabase.find(x => x.id === id); if (q && isUnverified(explMap[id]) && !inflight.has(id)) return q; }
         if (!verifyOn()) return null;
-        return pyqDatabase.find(q => isUnverified(explMap[q.id]) && !vskip.has(q.id)) || null;
+        return pyqDatabase.find(q => isUnverified(explMap[q.id]) && !vskip.has(q.id) && !inflight.has(q.id)) || null;
     }
 
     // ----- Scheduler -----
@@ -4658,25 +4658,33 @@ If reliable sources clearly disagree with the official key, keep the Answer as p
         try {
             if (isPaused()) { updateBar(); delay = 30000; return; }
             if (!getKeys().length && !getAltKeys().length) { lastMsg = 'Add a Gemini API key in Settings to start'; updateBar(); delay = 60000; return; }
-            const vq = nextVerifyTarget();
-            if (vq) {
-                if (!getKeys().length) { lastMsg = 'Verification needs a Gemini API key'; updateBar(); delay = 60000; return; }
-                lastMsg = `Gemini is verifying... (${vq.exam} ${vq.year})`; updateBar();
-                try {
-                    const fixed = await verifyOne(vq);
-                    backoff = 0; consecutiveErrors = 0;
-                    lastMsg = fixed ? 'Verified - one explanation corrected' : 'Verified - no changes needed'; updateBar();
-                } catch (e) {
-                    consecutiveErrors++;
-                    if (e.kind === 'quota' || e.kind === 'busy') {
-                        // Gemini is limited: stop verifying so normal writing (incl. Groq fallback) keeps going
+            const vlanes = Math.min(15, Math.max(1, availGeminiKeys()));
+            const vbatch = [];
+            for (let i = 0; i < vlanes; i++) { const t = nextVerifyTarget(); if (!t) break; inflight.add(t.id); vbatch.push(t); }
+            if (vbatch.length) {
+                if (!getKeys().length) { vbatch.forEach(t => inflight.delete(t.id)); lastMsg = 'Verification needs a Gemini API key'; updateBar(); delay = 60000; return; }
+                lastMsg = vbatch.length > 1 ? `Gemini is verifying ${vbatch.length} explanations at once... (${vbatch[0].exam} ${vbatch[0].year})` : `Gemini is verifying... (${vbatch[0].exam} ${vbatch[0].year})`; updateBar();
+                const vres = await Promise.all(vbatch.map(async vq => {
+                    try { const fixed = await verifyOne(vq); return { ok: true, fixed }; }
+                    catch (e) { return { ok: false, e, vq }; }
+                    finally { inflight.delete(vq.id); }
+                }));
+                const good = vres.filter(r => r.ok), vbad = vres.filter(r => !r.ok);
+                if (good.length) { backoff = 0; consecutiveErrors = 0; const nf = good.filter(r => r.fixed).length; lastMsg = `Verified ${good.length}${nf ? ' - ' + nf + ' corrected' : ' - no changes needed'}`; }
+                if (vbad.length) {
+                    const e = vbad[0].e; consecutiveErrors++;
+                    if ((e.kind === 'quota' || e.kind === 'busy') && e.retryMs) {
+                        // keys are resting: keep verifying, the next free key takes over automatically
+                        delay = Math.max(10000, Math.min(e.retryMs, 3600000));
+                        lastMsg = `Verifying - keys resting after their limit, next key back in ${Math.ceil(delay / 1000)} s (${availGeminiKeys()} of ${getKeys().length} keys ready)`;
+                    } else if (e.kind === 'quota' || e.kind === 'busy') {
                         setVerifyOn(false); verifyPrio.length = 0;
                         lastMsg = 'Verification stopped: Gemini limit reached. Press "Verify with Gemini" again when Gemini is back'; delay = EXPL_DELAY_MS;
                     } else if (e.kind === 'key') { delay = 10 * 60000; lastMsg = 'API key problem - check your keys in Settings'; }
-                    else { vfail[vq.id] = (vfail[vq.id] || 0) + 1; if (vfail[vq.id] >= 3) vskip.add(vq.id); lastMsg = 'Verification failed (' + String(e.message).slice(0, 70) + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
+                    else { vbad.forEach(r => { vfail[r.vq.id] = (vfail[r.vq.id] || 0) + 1; if (vfail[r.vq.id] >= 3) vskip.add(r.vq.id); }); lastMsg = 'Verification failed (' + String(e.message).slice(0, 70) + ')'; if (consecutiveErrors >= 8) { delay = 10 * 60000; consecutiveErrors = 0; } }
                     console.warn('[verify]', e.message);
-                    updateBar();
-                }
+                } else delay = EXPL_DELAY_MS;
+                updateBar();
                 return;
             }
             const lanes = Math.min(15, Math.max(1, availGeminiKeys()));          // write up to 15 explanations at once, each on a different (non-resting) key
