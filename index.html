@@ -302,7 +302,7 @@
 
                     <div class="space-y-1">
                         <button onclick="openApiKeyModal('vault')" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-amber-500/10 hover:text-amber-400 flex items-center gap-2.5 transition">
-    <i class="fa-solid fa-key text-amber-400 w-4"></i> API Key Vault (30 Slots)
+    <i class="fa-solid fa-key text-amber-400 w-4"></i> API Key Vault (40 Slots)
 </button>
 <button onclick="openApiKeyModal('providers')" class="w-full text-left px-3 py-2 rounded-lg text-xs font-medium text-gray-200 hover:bg-cyan-500/10 hover:text-cyan-400 flex items-center gap-2.5 transition">
     <i class="fa-solid fa-microchip text-cyan-400 w-4"></i> Connect Other AI (Groq / OpenRouter)
@@ -1300,7 +1300,7 @@
                 if (raw) {
                     const arr = JSON.parse(raw);
                     if (Array.isArray(arr) && arr.length >= 10) {
-                        while (arr.length < 30) arr.push({ name: arr.length >= 20 ? `Gemini Key ${arr.length - 4}` : (arr.length >= 15 ? `Groq Key ${arr.length - 14}` : `Gemini Key ${arr.length + 1}`), key: '', enabled: false });
+                        while (arr.length < 40) arr.push({ name: arr.length >= 20 ? `Gemini Key ${arr.length - 4}` : (arr.length >= 15 ? `Groq Key ${arr.length - 14}` : `Gemini Key ${arr.length + 1}`), key: '', enabled: false });
                         return arr;
                     }
                 }
@@ -1311,7 +1311,7 @@
                 .map(k => k.trim())
                 .filter(k => k.length > 10);
 
-            return Array.from({ length: 30 }, (_, i) => ({
+            return Array.from({ length: 40 }, (_, i) => ({
                 name: i < 7 ? `Gemini Key ${i + 1}` : (i === 7 ? 'Groq Fast AI' : (i === 8 ? 'OpenRouter (GPT/Claude)' : (i === 9 ? 'Backup AI Slot 10' : (i >= 20 ? `Gemini Key ${i - 4}` : (i >= 15 ? `Groq Key ${i - 14}` : `Gemini Key ${i + 1}`))))),
                 key: legacyKeys[i] || '',
                 enabled: Boolean(legacyKeys[i])
@@ -1349,7 +1349,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
 
                     <div class="flex border-b border-gray-800 bg-[#0f1623] px-5 pt-2 gap-2 text-xs font-semibold">
                         <button type="button" id="tab-btn-vault" onclick="window.switchApiVaultTab('vault')" class="px-3.5 py-2 rounded-t-lg border-b-2 border-amber-400 text-amber-400">
-                            <i class="fa-solid fa-key mr-1.5"></i>30 Renameable Key Slots
+                            <i class="fa-solid fa-key mr-1.5"></i>40 Renameable Key Slots
                         </button>
                         <button type="button" id="tab-btn-providers" onclick="window.switchApiVaultTab('providers')" class="px-3.5 py-2 rounded-t-lg border-b-2 border-transparent text-gray-400 hover:text-gray-200">
                             <i class="fa-solid fa-plug mr-1.5"></i>Connect Other AI Providers
@@ -1364,7 +1364,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                                 <span class="font-bold text-emerald-400 text-sm">1. Groq AI (Ultra-Fast Free Vision & Llama 4)</span>
                                 <a href="https://console.groq.com/keys" target="_blank" class="px-2.5 py-1 rounded bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 font-semibold">Get Free Groq Key ↗</a>
                             </div>
-                            <p class="text-gray-400">Starts with <code class="text-emerald-300">gsk_...</code> — Paste it into any of the 30 slots (Slots 16–20 are reserved for Groq keys; Slots 21–30 are extra Gemini keys). If Gemini is busy, your portal automatically fails over to Groq.</p>
+                            <p class="text-gray-400">Starts with <code class="text-emerald-300">gsk_...</code> — Paste it into any of the 40 slots (Slots 16–20 are reserved for Groq keys; Slots 21–40 are extra Gemini keys). If Gemini is busy, your portal automatically fails over to Groq.</p>
                         </div>
 
                         <div class="p-3.5 rounded-xl bg-gray-900/90 border border-cyan-500/30 space-y-1.5">
@@ -1389,7 +1389,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                         <div class="flex items-center gap-2.5">
                             <button type="button" onclick="window.closeApiVaultModal()" class="px-4 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 text-gray-300 text-xs font-semibold">Close</button>
                             <button type="button" onclick="window.saveApiKey()" class="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-black text-xs font-bold shadow-lg">
-                                <i class="fa-solid fa-floppy-disk mr-1"></i> Save All 30 Slots
+                                <i class="fa-solid fa-floppy-disk mr-1"></i> Save All 40 Slots
                             </button>
                         </div>
                     </div>
@@ -1439,7 +1439,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
                 </div>`;
             }).join('');
             const activeCount = slots.filter(s => s.enabled && s.key.trim().length > 10).length;
-            document.getElementById('vault-active-summary').textContent = `${activeCount} of 30 slots active`;
+            document.getElementById('vault-active-summary').textContent = `${activeCount} of 40 slots active`;
         }
 
         window.updateSlotBadge = function(idx) {
@@ -1471,7 +1471,7 @@ if (k.startsWith('AIza') || k.startsWith('AQ.')) return { label: 'Gemini', cls: 
 
         window.saveApiKey = function() {
             const slots = [];
-            for (let i = 0; i < 30; i++) {
+            for (let i = 0; i < 40; i++) {
                 const name = document.getElementById(`vault-name-${i}`).value.trim() || `Slot ${i + 1}`;
                 const key = document.getElementById(`vault-key-${i}`).value.trim();
                 const enabled = document.getElementById(`vault-enabled-${i}`).checked && key.length > 10;
