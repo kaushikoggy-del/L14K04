@@ -6704,8 +6704,11 @@ Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"static","hook":"
     const toolkitFor = name => { const f = TK.find(t => t[0].test(name || '')); return (f ? f[1] : DEFAULT_TK).map(([k, t, h]) => ({ k, t, h })); };
 
     // ---------- storage (IndexedDB) ----------
-    let issues = [], meta = {}, idb = null, loaded = false;
-    const openDb = () => new Promise((res, rej) => { const r = indexedDB.open('ca_v1', 1); r.onupgradeneeded = () => { r.result.createObjectStore('issues', { keyPath: 'id' }); r.result.createObjectStore('meta', { keyPath: 'key' }); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
+    let issues = [], meta = {}, srcs = [], notes = [], idb = null, loaded = false;
+    const OTHER = 'Other / not matched';
+    const safeUrl = u => { const t = String(u || '').trim(); return /^https:\/\/[^\s<>"']+$/i.test(t) ? t : ''; };   // only https links are ever shown as links
+    const cleanSources = l => (Array.isArray(l) ? l : []).map(x => ({ title: String((x && x.title) || '').slice(0, 200), uri: safeUrl(x && x.uri) })).filter(x => x.title || x.uri);
+    const openDb = () => new Promise((res, rej) => { const r = indexedDB.open('ca_v1', 2); r.onupgradeneeded = () => { const d = r.result; [['issues', 'id'], ['meta', 'key'], ['srcs', 'id'], ['notes', 'id']].forEach(([n, k]) => { if (!d.objectStoreNames.contains(n)) d.createObjectStore(n, { keyPath: k }); }); }; r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
     const getAll = st => new Promise((res, rej) => { const rq = idb.transaction(st).objectStore(st).getAll(); rq.onsuccess = () => res(rq.result || []); rq.onerror = () => rej(rq.error); });
     const putMany = (st, list) => new Promise((res, rej) => {
         if (!idb) return rej(new Error('Browser storage is not available in this mode (private window?).'));
@@ -6713,14 +6716,14 @@ Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"static","hook":"
     });
     const delOne = (st, id) => new Promise((res, rej) => { if (!idb) return rej(new Error('Browser storage is not available.')); const tx = idb.transaction(st, 'readwrite'); tx.objectStore(st).delete(id); tx.oncomplete = () => res(); tx.onerror = () => rej(tx.error); });
     async function load() {
-        try { idb = await openDb(); issues = await getAll('issues'); (await getAll('meta')).forEach(m => { meta[m.key] = m; }); }
+        try { idb = await openDb(); issues = await getAll('issues'); issues.forEach(i => { if (i.sources) i.sources = cleanSources(i.sources); }); srcs = await getAll('srcs'); notes = await getAll('notes'); (await getAll('meta')).forEach(m => { meta[m.key] = m; }); }
         catch (e) { idb = null; issues = []; console.warn('[ca] storage unavailable', e); }
         try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch (e) {}
         loaded = true; render();
     }
 
     // ---------- state ----------
-    const ui = { gs: 'GS2', subject: 'ALL', topic: 'ALL', month: 'ALL', kind: 'ALL', newest: false, q: '', sel: null, overlay: false, scanMonth: 'ALL', scan: { running: false, stop: false, msg: '', done: 0, total: 0 }, building: {}, err: {} };
+    const ui = { mode: 'issues', gs: 'GS2', subject: 'ALL', topic: 'ALL', month: 'ALL', kind: 'ALL', newest: false, q: '', sel: null, overlay: false, scanMonth: 'ALL', scan: { running: false, stop: false, msg: '', done: 0, total: 0 }, building: {}, err: {} };
     try { const v = JSON.parse(localStorage.getItem('ca_ui_v1')); if (v) ['gs', 'subject', 'topic', 'month', 'kind', 'newest'].forEach(k => { if (v[k] !== undefined) ui[k] = v[k]; }); } catch (e) {}
     const saveUi = () => { try { localStorage.setItem('ca_ui_v1', JSON.stringify({ gs: ui.gs, subject: ui.subject, topic: ui.topic, month: ui.month, kind: ui.kind, newest: ui.newest })); } catch (e) {} };
     const monthList = () => { const out = []; let [y, m] = START.split('-').map(Number); const n = new Date(), ey = n.getFullYear(), em = n.getMonth() + 1; while (y < ey || (y === ey && m <= em)) { out.push(`${y}-${pad(m)}`); m++; if (m > 12) { m = 1; y++; } } return out; };
@@ -6743,7 +6746,7 @@ Reply ONLY with a JSON array: [{"dimension":"","why":"","kind":"static","hook":"
     const strs = (x, n) => (Array.isArray(x) ? x : (x ? [x] : [])).map(v => typeof v === 'string' ? v : (v && (v.point || v.text) ? String(v.point || v.text) : '')).map(v => v.trim()).filter(Boolean).slice(0, n || 6);
     const SRC_RULE = 'Use Google Search. Use ONLY information found in PIB (pib.gov.in), other Government of India websites (.gov.in, .nic.in), The Hindu and The Indian Express. Ignore every other source. If something is not covered by these sources, leave it out. Never invent anything.';
 
-    function scanPrompt(gs, sub, topics, month) {
+    function scanPrompt(gs, sub, topics, month, tracked) {
         const [y, m] = month.split('-').map(Number), now = new Date();
         const last = (now.getFullYear() === y && now.getMonth() + 1 === m) ? now.getDate() : new Date(y, m, 0).getDate();
         return `You are a UPSC Civil Services current affairs analyst (Mains-focused). Today is ${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}.
@@ -6751,14 +6754,14 @@ Task: find the MAJOR developments between ${y}-${pad(m)}-01 and ${y}-${pad(m)}-$
 ${SRC_RULE}
 Pick only issues that are widely discussed, relevant to the syllabus topics below, and likely to give an analytical or application-based Mains question. Skip routine news, party politics without policy content, and minor events. Return 3 to 8 issues (fewer is fine; return [] if nothing important).
 Syllabus topics of this subject: ${topics.join('; ')}
-Return ONLY a JSON array. Each element:
+${tracked && tracked.length ? 'Issues ALREADY tracked for this subject (titles): ' + tracked.join(' | ') + '\nIf a development of this month is a NEW EVENT in one of these tracked issues (a new order, report, amendment, agreement, data release or a new reason for the same issue to be in the news), add the extra field "sameAs" with that tracked title copied EXACTLY, and make "summary" describe only what is new this month. For a new issue use "sameAs": "".\n' : ''}Return ONLY a JSON array. Each element:
 {"title": "short issue title, max 12 words", "date": "YYYY-MM-DD main date of the development", "topic": "exactly one topic from the list above", "summary": "1-2 lines: what happened", "whyUpsc": "one line: the Mains angle", "prelims": true or false (true ONLY if a direct fact-based MCQ is realistic), "pyqKeywords": ["3 to 5 specific keywords or phrases (Act names, Article numbers, scheme or institution names) to find related past questions"]}`;
     }
     function briefPrompt(it) {
         const tk = toolkitFor(it.subject);
         return `You are a UPSC Mains answer-writing mentor. Build a compact brief on this current affairs issue so an aspirant can write a high-scoring answer.
 Issue: ${it.title}
-${it.gs} > ${it.subject} > ${it.topic}. Date: ${it.date}. Summary: ${it.summary}
+${it.gs} > ${it.subject} > ${it.topic}. Date: ${it.date || it.month}. Summary: ${it.summary}${(it.updates && it.updates.length) ? '\nLater developments in this same issue: ' + it.updates.map(u => monthName(u.month) + ': ' + u.text).join(' || ') : ''}
 ${SRC_RULE} Do not invent facts, figures, Article numbers, judgement names or committee names; if unsure, leave it out. Put the year with every number. End each bullet that states a fact with its source type in brackets: [PIB], [Govt site], [The Hindu] or [Indian Express].
 Be PRACTICAL and SHORT: it must be revisable in 3 minutes. At most 5 bullets in each list, each bullet at most 25 words.
 Return ONLY this JSON object:
@@ -6780,38 +6783,56 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
 
     // ---------- scanning a subject month by month ----------
     const scanKey = (gs, sub, mo) => `scan:${gs}:${sub}:${mo}`;
+    const GENERIC = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'over', 'new', 'govt', 'government', 'india', 'indian', 'union', 'centre', 'central', 'state', 'states', 'policy', 'scheme', 'issue']);
+    const toks = t => new Set(norm(t).split(' ').filter(w => w.length > 2 && !GENERIC.has(w)));
+    function sameIssue(a, b) { const A = toks(a), B = toks(b); if (!A.size || !B.size) return false; let c = 0; A.forEach(w => { if (B.has(w)) c++; }); return (c >= 3 && c / Math.min(A.size, B.size) >= 0.7) || c / (A.size + B.size - c) >= 0.55; }
+    const monthName = m => { const [y, mm] = String(m).split('-'); return MN[Number(mm) - 1] + ' ' + y; };
     function matchTopic(topics, t) { const n = norm(t); if (!n) return ''; return topics.find(x => norm(x) === n) || topics.find(x => norm(x).includes(n) || n.includes(norm(x))) || ''; }
     async function scanMonth(gs, sub, mo) {
         const subj = (taxonomy()[gs] || []).find(x => x.name === sub), topics = subj && subj.topics.length ? subj.topics : [sub];
-        const out = await ask(scanPrompt(gs, sub, topics, mo), 6000);
+        const tracked = issues.filter(i => i.gs === gs && i.subject === sub).map(i => i.title).slice(-40);
+        const out = await ask(scanPrompt(gs, sub, topics, mo, tracked), 6000);
         const arr = jsonFrom(out.text, '[', ']'); if (!Array.isArray(arr)) throw new Error('The AI did not return a list. Try again.');
-        const verified = out.sources.some(okSource), fresh = [];
+        const verified = out.sources.some(okSource), fresh = [], touched = [];
+        const lastDay = (() => { const [yy, mm] = mo.split('-').map(Number); return new Date(yy, mm, 0).getDate(); })();
         arr.forEach(x => {
             const title = String((x && x.title) || '').trim(); if (title.length < 6) return;
             const id = 'ca_' + hash(norm(gs + '|' + sub + '|' + title));
-            if (issues.some(i => i.id === id) || fresh.some(i => i.id === id)) return;
-            let date = String(x.date || ''); if (!new RegExp('^' + mo + '-\\d{2}').test(date)) date = mo + '-15';
-            fresh.push({ id, gs, subject: sub, topic: matchTopic(topics, x.topic) || topics[0], month: mo, date, title, summary: String(x.summary || '').trim(), whyUpsc: String(x.whyUpsc || '').trim(), prelims: x.prelims === true, pyqKeys: strs(x.pyqKeywords, 6), verified, createdTs: Date.now(), brief: null });
+            let date = String(x.date || '').trim(); const dm = date.match(new RegExp('^' + mo + '-(\\d{2})')); if (!dm || Number(dm[1]) < 1 || Number(dm[1]) > lastDay) date = '';   // a date outside the scanned month is not trusted: shown as "date not clear"
+            const pool = issues.filter(i => i.gs === gs && i.subject === sub).concat(fresh);
+            let ex = null;
+            const tied = String(x.sameAs || '').trim(); if (tied) ex = pool.find(i => norm(i.title) === norm(tied)) || null;
+            if (!ex) ex = pool.find(i => i.id === id) || pool.find(i => sameIssue(i.title, title)) || null;
+            const summary = String(x.summary || '').trim(), why = String(x.whyUpsc || '').trim();
+            if (ex) {   // same issue seen again: keep ONE card and add a dated update to it
+                const ups = ex.updates = ex.updates || [];
+                if (ex.month === mo || ups.some(u => u.month === mo && (sameIssue(u.text, summary) || norm(u.text) === norm(summary)))) return;   // already known for this month (re-scan)
+                ups.push({ month: mo, date, text: summary || title, whyUpsc: why, ts: Date.now() });
+                ex.updatedTs = Date.now(); if (ex.brief) ex.briefStale = true;
+                if (!fresh.includes(ex) && !touched.includes(ex)) touched.push(ex);
+                return;
+            }
+            fresh.push({ id, gs, subject: sub, topic: matchTopic(topics, x.topic) || OTHER, month: mo, date, title, summary, whyUpsc: why, prelims: x.prelims === true, pyqKeys: strs(x.pyqKeywords, 6), verified, createdTs: Date.now(), brief: null, updates: [] });
         });
-        if (fresh.length) await putMany('issues', fresh);
+        if (fresh.length || touched.length) await putMany('issues', fresh.concat(touched));
         fresh.forEach(f => issues.push(f));
-        const m = { key: scanKey(gs, sub, mo), ts: Date.now(), n: fresh.length, verified }; await putMany('meta', [m]); meta[m.key] = m;
-        return fresh.length;
+        const m = { key: scanKey(gs, sub, mo), ts: Date.now(), n: fresh.length, upd: touched.length, verified }; await putMany('meta', [m]); meta[m.key] = m;
+        return { added: fresh.length, updated: touched.length };
     }
     async function runScan() {
         if (ui.scan.running) return;
         if (ui.subject === 'ALL') { pop({ title: 'Pick a subject first', type: 'warn', html: '<div>Choose a GS paper and a subject in the filters, then press Scan. The scan reads one subject at a time so the results stay accurate.</div>' }); return; }
         const gs = ui.gs, sub = ui.subject, months = ui.scanMonth === 'ALL' ? monthList() : [ui.scanMonth];
         ui.scan = { running: true, stop: false, msg: 'Starting...', done: 0, total: months.length }; render();
-        let added = 0, stoppedFor = '';
+        let added = 0, updated = 0, stoppedFor = '';
         for (const mo of months) {
             if (ui.scan.stop) break;
             ui.scan.msg = `Reading ${mLabel(mo)} news for ${sub}...`; render();
-            try { added += await scanMonth(gs, sub, mo); ui.scan.done++; }
+            try { const r = await scanMonth(gs, sub, mo); added += r.added; updated += r.updated; ui.scan.done++; }
             catch (e) { stoppedFor = errText(e); break; }
         }
         const done = ui.scan.done, total = ui.scan.total;
-        ui.scan = { running: false, stop: false, msg: stoppedFor ? `Stopped after ${done} of ${total} months: ${stoppedFor}` : `Done. ${added} new issues found in ${done} month(s).`, done, total };
+        ui.scan = { running: false, stop: false, msg: stoppedFor ? `Stopped after ${done} of ${total} months: ${stoppedFor}` : `Done. ${added} new issue(s) and ${updated} update(s) to existing issues, from ${done} month(s).`, done, total };
         if (stoppedFor) pop({ title: 'Scan stopped', type: 'warn', html: `<div>${esc(stoppedFor)}</div><div class="text-xs text-gray-400">Months already scanned are saved. Press Scan again later to continue with the remaining months.</div>` });
         render();
     }
@@ -6835,8 +6856,8 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
             const k = strs(b.pyqKeywords, 6); if (k.length) it.pyqKeys = Array.from(new Set([...k, ...(it.pyqKeys || [])])).slice(0, 8);
             it.prelims = it.prelims || it.brief.prelimsRelevant;
             const allowed = out.sources.filter(okSource);
-            it.sources = allowed.map(s => ({ title: s.title, uri: s.uri })); it.sourcesDropped = out.sources.length - allowed.length;
-            it.verified = allowed.length > 0; it.briefTs = Date.now(); delete it._pyq;
+            it.sources = cleanSources(allowed); it.sourcesDropped = out.sources.length - allowed.length;
+            it.verified = allowed.length > 0; it.briefTs = Date.now(); it.briefStale = false; delete it._pyq;
             await putMany('issues', [it]);
         } catch (e) { ui.err[id] = errText(e); }
         ui.building[id] = false; render();
@@ -6872,16 +6893,17 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
     const sel = 'bg-black/30 border border-gray-600 rounded-lg px-2 py-1 text-xs text-gray-200';
     function filtered() {
         const q = norm(ui.q);
-        let l = issues.filter(i => i.gs === ui.gs && (ui.subject === 'ALL' || i.subject === ui.subject) && (ui.topic === 'ALL' || i.topic === ui.topic) && (ui.month === 'ALL' || i.month === ui.month) && (ui.kind === 'ALL' || i.prelims || (i.brief && i.brief.prelimsRelevant)) && (!q || norm(i.title + ' ' + i.summary + ' ' + i.topic).includes(q)));
-        l.sort((a, b) => String(a.date).localeCompare(String(b.date)) * (ui.newest ? -1 : 1));
+        let l = issues.filter(i => i.gs === ui.gs && (ui.subject === 'ALL' || i.subject === ui.subject) && (ui.topic === 'ALL' || i.topic === ui.topic) && (ui.month === 'ALL' || i.month === ui.month || (i.updates || []).some(u => u.month === ui.month)) && (ui.kind === 'ALL' || i.prelims || (i.brief && i.brief.prelimsRelevant)) && (!q || norm(i.title + ' ' + i.summary + ' ' + i.topic).includes(q)));
+        const sk = i => ((ui.month !== 'ALL' && i.month !== ui.month) ? ((i.updates || []).find(u => u.month === ui.month) || {}).date || ui.month + '-99' : i.date || i.month + '-99');
+        l.sort((a, b) => String(sk(a)).localeCompare(String(sk(b))) * (ui.newest ? -1 : 1));
         return l;
     }
     function card(i) {
         const bt = i.brief ? '<span class="text-emerald-400" title="Brief ready"><i class="fa-solid fa-circle-check"></i></span>' : '';
         return `<button type="button" data-ca="open" data-id="${esc(i.id)}" class="w-full text-left bg-card p-3 rounded-xl border border-gray-700/60 hover:border-sky-500/60 transition space-y-1 ${ui.sel === i.id ? 'ca-sel' : ''}">
-            <div class="flex items-start gap-2"><span class="text-[11px] text-gray-400 flex-none pt-0.5">${esc(dShort(i.date))}</span><span class="text-sm font-semibold text-gray-100 flex-1">${esc(i.title)}</span>${bt}</div>
+            <div class="flex items-start gap-2"><span class="text-[11px] text-gray-400 flex-none pt-0.5">${esc(dShort(i.date) || '')}</span><span class="text-sm font-semibold text-gray-100 flex-1">${esc(i.title)}</span>${bt}</div>
             <div class="text-xs text-gray-400">${esc(i.summary)}</div>
-            <div class="flex flex-wrap gap-1.5 text-[10px]"><span class="px-1.5 py-0.5 rounded border border-sky-500/30 bg-sky-500/10 text-sky-300">${esc(i.topic)}</span>${i.prelims ? '<span class="px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">Prelims-likely</span>' : ''}${i.verified === false ? '<span class="px-1.5 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-rose-300">No allowed source</span>' : ''}</div></button>`;
+            <div class="flex flex-wrap gap-1.5 text-[10px]"><span class="px-1.5 py-0.5 rounded border border-sky-500/30 bg-sky-500/10 text-sky-300">${esc(i.topic)}</span>${i.prelims ? '<span class="px-1.5 py-0.5 rounded border border-amber-500/30 bg-amber-500/10 text-amber-300">Prelims-likely</span>' : ''}${(i.updates || []).length ? `<span class="px-1.5 py-0.5 rounded border border-emerald-500/30 bg-emerald-500/10 text-emerald-300">Updated ${esc(mShort(i.updates[i.updates.length - 1].month))}${i.updates.length > 1 ? ' (+' + i.updates.length + ')' : ''}</span>` : ''}${i.briefStale ? '<span class="px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-300">Brief outdated</span>' : ''}${i.verified === false ? '<span class="px-1.5 py-0.5 rounded border border-rose-500/30 bg-rose-500/10 text-rose-300">No allowed source</span>' : ''}</div></button>`;
     }
     const bullets = l => `<ul class="list-disc pl-5 space-y-1 text-sm text-gray-200">${l.map(x => `<li>${esc(x)}</li>`).join('')}</ul>`;
     const sect = (title, inner, cls) => inner ? `<div class="ca-sec space-y-1 ${cls || ''}"><div class="text-xs font-bold uppercase tracking-wide text-sky-300 font-sans">${title}</div>${inner}</div>` : '';
@@ -6890,11 +6912,13 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
         const b = it.brief, id = esc(it.id), r = pyqFor(it), busy = ui.building[it.id];
         const chip = (t, c) => `<span class="px-2 py-0.5 rounded border ${c}">${t}</span>`;
         let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-4">
-            <div class="flex items-start justify-between gap-3"><div class="space-y-1"><div class="flex flex-wrap gap-1.5 text-[11px] font-sans">${chip(esc(it.gs), 'border-gray-600 text-gray-300')}${chip(esc(it.subject), 'border-gray-600 text-gray-300')}${chip(esc(it.topic), 'border-sky-500/30 bg-sky-500/10 text-sky-300')}${chip(esc(dShort(it.date)) + ' ' + esc(it.month.slice(0, 4)), 'border-gray-600 text-gray-400')}</div>
+            <div class="flex items-start justify-between gap-3"><div class="space-y-1"><div class="flex flex-wrap gap-1.5 text-[11px] font-sans">${chip(esc(it.gs), 'border-gray-600 text-gray-300')}${chip(esc(it.subject), 'border-gray-600 text-gray-300')}${chip(esc(it.topic), 'border-sky-500/30 bg-sky-500/10 text-sky-300')}${chip(it.date ? esc(dShort(it.date)) + ' ' + esc(it.month.slice(0, 4)) : esc(mLabel(it.month)) + ' (exact date not clear)', 'border-gray-600 text-gray-400')}</div>
                 <div class="text-base font-bold text-gray-100">${esc(it.title)}</div></div>
                 <button type="button" data-ca="close" class="ca-close text-gray-400 hover:text-white px-2" title="Close"><i class="fa-solid fa-xmark"></i></button></div>
             <div class="text-sm text-gray-300">${esc(it.summary)}</div>
             ${it.whyUpsc ? `<div class="text-xs text-violet-300"><i class="fa-solid fa-bullseye"></i> UPSC angle: ${esc(it.whyUpsc)}</div>` : ''}
+            ${(it.updates || []).length ? `<div class="rounded-lg border border-emerald-500/40 bg-emerald-900/10 p-3 space-y-1.5"><div class="text-xs font-bold uppercase tracking-wide text-emerald-300 font-sans"><i class="fa-solid fa-clock-rotate-left"></i> Later developments in this issue</div>${it.updates.slice().sort((a, b) => String(a.date || a.month).localeCompare(String(b.date || b.month))).map(u => `<div class="text-sm text-gray-200"><span class="text-[11px] text-emerald-300 font-sans">${esc(u.date ? dShort(u.date) + ' ' + u.month.slice(0, 4) : mLabel(u.month))}</span> - ${esc(u.text)}${u.whyUpsc ? ` <span class="text-xs text-violet-300">(${esc(u.whyUpsc)})</span>` : ''}</div>`).join('')}</div>` : ''}
+            ${it.briefStale ? '<div class="rounded-lg border border-amber-500/40 bg-amber-900/10 p-2 text-xs text-amber-200"><i class="fa-solid fa-triangle-exclamation"></i> New developments were added after this brief was built. Press <b>Rebuild</b> below to include them.</div>' : ''}
             <div class="flex flex-wrap gap-2 text-xs font-sans">
                 <button type="button" data-ca="pyq" data-kind="prelims" data-id="${id}" class="px-3 py-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20">Prelims PYQs: <b>${r.pd.length}</b> on this issue &middot; ${r.pt.length} on topic</button>
                 <button type="button" data-ca="pyq" data-kind="mains" data-id="${id}" class="px-3 py-1.5 rounded-lg border border-violet-500/40 bg-violet-500/10 text-violet-200 hover:bg-violet-500/20">Mains PYQs: <b>${r.md.length}</b> on this issue &middot; ${r.mt.length} on topic</button>
@@ -6904,7 +6928,7 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
         else if (!b) h += `<button type="button" data-ca="build" data-id="${id}" class="px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg text-xs font-bold"><i class="fa-solid fa-wand-magic-sparkles"></i> Build brief</button>`;
         else {
             const tk = toolkitFor(it.subject);
-            h += (it.verified ? '<div class="text-[11px] text-emerald-400"><i class="fa-solid fa-circle-check"></i> Built from allowed sources only (PIB / government sites / The Hindu / The Indian Express).</div>' : '<div class="rounded-lg border border-rose-500/40 bg-rose-900/10 p-2 text-[11px] text-rose-200"><i class="fa-solid fa-triangle-exclamation"></i> No PIB / government / The Hindu / Indian Express source was found for this brief. Treat it as unverified and check before using.</div>');
+            h += (it.verified ? `<div class="text-[11px] text-emerald-400"><i class="fa-solid fa-circle-check"></i> At least one allowed source (PIB / government site / The Hindu / The Indian Express) was found.${it.sourcesDropped ? ' ' + it.sourcesDropped + ' other link(s) were also read by the search and are not shown, so check key facts against the sources below.' : ''}</div>` : '<div class="rounded-lg border border-rose-500/40 bg-rose-900/10 p-2 text-[11px] text-rose-200"><i class="fa-solid fa-triangle-exclamation"></i> No PIB / government / The Hindu / Indian Express source was found for this brief. Treat it as unverified and check before using.</div>');
             h += sect('What happened', bullets(b.facts));
             h += sect('Background', b.background ? `<div class="text-sm text-gray-200">${esc(b.background)}</div>` : '');
             tk.forEach(t => { if (b.sections[t.k] && b.sections[t.k].length) h += sect(esc(t.t), bullets(b.sections[t.k])); });
@@ -6914,7 +6938,7 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
             if (b.answerHook) h += `<div class="rounded-lg border border-violet-500/40 bg-violet-900/10 p-3 text-sm text-violet-100"><b class="text-violet-300 text-xs uppercase tracking-wide font-sans">How to use it:</b> ${esc(b.answerHook)}</div>`;
             if (b.likelyQuestions.length) h += sect('Likely questions', bullets(b.likelyQuestions));
             if (b.prelimsRelevant && b.prelimsFacts.length) h += `<div class="rounded-lg border border-amber-500/40 bg-amber-900/10 p-3 space-y-1"><div class="text-xs font-bold uppercase tracking-wide text-amber-300 font-sans">For Prelims</div>${bullets(b.prelimsFacts)}</div>`;
-            h += `<div class="text-xs text-gray-400 space-y-1"><div class="font-bold text-gray-300 font-sans">Sources</div>${(it.sources || []).length ? (it.sources || []).map(s => `<div><a href="${esc(s.uri)}" target="_blank" rel="noopener" class="text-sky-300 hover:underline">${esc(domainOf(s))}</a></div>`).join('') : '<div>None from the allowed list.</div>'}${it.sourcesDropped ? `<div class="text-gray-500">${it.sourcesDropped} other link(s) were ignored because they are not from the allowed sources.</div>` : ''}</div>`;
+            h += `<div class="text-xs text-gray-400 space-y-1"><div class="font-bold text-gray-300 font-sans">Sources</div>${(it.sources || []).length ? (it.sources || []).map(s => safeUrl(s.uri) ? `<div><a href="${esc(safeUrl(s.uri))}" target="_blank" rel="noopener noreferrer" class="text-sky-300 hover:underline">${esc(domainOf(s))}</a></div>` : `<div class="text-gray-500">${esc(domainOf(s))} (no safe link)</div>`).join('') : '<div>None from the allowed list.</div>'}${it.sourcesDropped ? `<div class="text-gray-500">${it.sourcesDropped} other link(s) were also found by the search and are not shown because they are not from the allowed list.</div>` : ''}</div>`;
             h += `<div class="flex flex-wrap gap-4 text-xs font-sans pt-1"><button type="button" data-ca="build" data-id="${id}" class="text-sky-300 hover:underline"><i class="fa-solid fa-rotate"></i> Rebuild</button><button type="button" data-ca="copy" data-id="${id}" class="text-sky-300 hover:underline"><i class="fa-regular fa-copy"></i> Copy notes</button></div>`;
         }
         h += `<div class="text-xs font-sans"><button type="button" data-ca="delete" data-id="${id}" class="text-red-300 hover:underline">Delete this issue</button></div></div>`;
@@ -6925,14 +6949,15 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
         if (!loaded) { el.innerHTML = '<div class="text-xs text-gray-400 p-4">Loading Current Affairs...</div>'; return; }
         const tax = taxonomy(), subs = tax[ui.gs] || [];
         if (ui.subject !== 'ALL' && !subs.some(s => s.name === ui.subject)) { ui.subject = 'ALL'; ui.topic = 'ALL'; }
-        const subj = subs.find(s => s.name === ui.subject), topics = subj ? subj.topics : [];
+        const subj = subs.find(s => s.name === ui.subject), topics = subj ? subj.topics.concat(issues.some(i => i.gs === ui.gs && i.subject === ui.subject && i.topic === OTHER) ? [OTHER] : []) : [];
         if (ui.topic !== 'ALL' && !topics.includes(ui.topic)) ui.topic = 'ALL';
         const months = monthList(), base = issues.filter(i => i.gs === ui.gs && (ui.subject === 'ALL' || i.subject === ui.subject) && (ui.topic === 'ALL' || i.topic === ui.topic));
         const list = filtered(), bySel = issues.find(i => i.id === ui.sel);
         const scanned = m => ui.subject !== 'ALL' && meta[scanKey(ui.gs, ui.subject, m)];
-        let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-3">
+        const mt = (k, t, ic) => `<button type="button" data-ca="mode" data-m="${k}" class="px-3 py-1.5 rounded-lg border font-semibold ${ui.mode === k ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}"><i class="fa-solid ${ic}"></i> ${t}</button>`;
+        let h = `<div class="flex flex-wrap gap-2 text-xs">${mt('issues', 'Issues (news scan)', 'fa-newspaper')}${mt('sources', 'My Sources &amp; Notes', 'fa-book-open-reader')}</div><div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2"><div><div class="text-sm font-bold text-sky-300 flex items-center gap-2"><i class="fa-solid fa-newspaper"></i> Current Affairs <span class="text-[11px] font-normal text-gray-500">from June 2026</span></div>
-                <div class="text-[11px] text-gray-500">Sources: PIB, Government websites, The Hindu, The Indian Express only. Issue-based, built for Mains; Prelims-likely items are flagged.</div></div>
+                <div class="text-[11px] text-gray-500">Sources: asked to use PIB, Government websites, The Hindu and The Indian Express; links from other sites are not shown. Issue-based, built for Mains; Prelims-likely items are flagged.</div></div>
                 <div class="flex gap-3 text-xs"><button type="button" data-ca="export" class="text-sky-300 hover:underline"><i class="fa-solid fa-download"></i> Export</button><button type="button" data-ca="import" class="text-sky-300 hover:underline"><i class="fa-solid fa-file-import"></i> Import</button><input type="file" id="ca-import-file" accept="application/json,.json" class="hidden"></div></div>
             <div class="flex flex-wrap items-center gap-2 text-xs text-gray-300">
                 <select id="ca-gs" class="${sel}">${GS_LIST.map(g => `<option value="${g}" ${ui.gs === g ? 'selected' : ''}>${esc(GS_NAME[g])}</option>`).join('')}</select>
@@ -6941,11 +6966,13 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
                 <select id="ca-kind" class="${sel}"><option value="ALL">Mains + Prelims</option><option value="P" ${ui.kind === 'P' ? 'selected' : ''}>Prelims-likely only</option></select>
                 <input id="ca-q" value="${esc(ui.q)}" placeholder="Search issues..." class="${sel} w-44">
                 <button type="button" data-ca="order" class="text-sky-300 hover:underline">${ui.newest ? 'Newest first' : 'Oldest first'}</button></div>
-            <div class="flex flex-wrap gap-1.5 text-[11px]"><button type="button" data-ca="month" data-m="ALL" class="px-2.5 py-1 rounded-lg border ${ui.month === 'ALL' ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}">All months (${base.length})</button>${months.map(m => `<button type="button" data-ca="month" data-m="${m}" class="px-2.5 py-1 rounded-lg border ${ui.month === m ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}">${esc(mShort(m))} (${base.filter(i => i.month === m).length})${scanned(m) ? ' &#10003;' : ''}</button>`).join('')}</div>
-            <div class="flex flex-wrap items-center gap-2 text-xs border-t border-gray-700/60 pt-3"><span class="text-gray-400">Find news for ${ui.subject === 'ALL' ? '<i>(pick a subject)</i>' : '<b class="text-gray-200">' + esc(ui.subject) + '</b>'}:</span>
+            <div class="flex flex-wrap gap-1.5 text-[11px]" style="${ui.mode === 'sources' ? 'display:none' : ''}"><button type="button" data-ca="month" data-m="ALL" class="px-2.5 py-1 rounded-lg border ${ui.month === 'ALL' ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}">All months (${base.length})</button>${months.map(m => `<button type="button" data-ca="month" data-m="${m}" class="px-2.5 py-1 rounded-lg border ${ui.month === m ? 'bg-sky-600 text-white border-sky-400' : 'border-gray-600 text-gray-300'}">${esc(mShort(m))} (${base.filter(i => i.month === m || (i.updates || []).some(u => u.month === m)).length})${scanned(m) ? ' &#10003;' : ''}</button>`).join('')}</div>
+            <div class="flex flex-wrap items-center gap-2 text-xs border-t border-gray-700/60 pt-3" style="${ui.mode === 'sources' ? 'display:none' : ''}"><span class="text-gray-400">Find news for ${ui.subject === 'ALL' ? '<i>(pick a subject)</i>' : '<b class="text-gray-200">' + esc(ui.subject) + '</b>'}:</span>
                 <select id="ca-scanmonth" class="${sel}"><option value="ALL">All months since June 2026</option>${months.map(m => `<option value="${m}" ${ui.scanMonth === m ? 'selected' : ''}>${esc(mLabel(m))}</option>`).join('')}</select>
                 ${ui.scan.running ? `<button type="button" data-ca="stop" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>` : `<button type="button" data-ca="scan" class="px-3 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold"><i class="fa-solid fa-magnifying-glass"></i> Scan news</button>`}
                 <span class="text-gray-400">${esc(ui.scan.msg)}${ui.scan.running ? ` (${ui.scan.done}/${ui.scan.total})` : ''}</span></div></div>`;
+        if (ui.mode === 'sources') h += `<div class="space-y-3">${sourcesView()}</div>`;
+        else {
         h += `<div class="ca-grid"><div class="space-y-3">`;
         if (!list.length) h += `<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-400 text-center space-y-1"><div>No issues here yet.</div><div>${ui.subject === 'ALL' ? 'Pick a subject, then press <b>Scan news</b>.' : 'Press <b>Scan news</b> to find this subject\'s major developments from June 2026.'}</div></div>`;
         else {
@@ -6953,6 +6980,7 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
             Object.keys(groups).sort((a, b) => a.localeCompare(b) * (ui.newest ? -1 : 1)).forEach(m => { h += `<div class="text-xs font-bold text-gray-300 pt-1">${esc(mLabel(m))} <span class="text-gray-500 font-normal">(${groups[m].length})</span></div>${groups[m].map(card).join('')}`; });
         }
         h += `</div><div class="ca-detail ${ui.overlay ? 'open' : ''}" id="ca-detail">${detail(bySel)}</div></div>`;
+        }
         const keepQ = document.activeElement && document.activeElement.id === 'ca-q', pos = keepQ ? document.activeElement.selectionStart : 0;
         el.innerHTML = h;
         if (keepQ) { const q = document.getElementById('ca-q'); q.focus(); try { q.setSelectionRange(pos, pos); } catch (e) {} }
@@ -6964,17 +6992,31 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
             else if (t === 'ca-kind') ui.kind = e.target.value;
             else if (t === 'ca-scanmonth') { ui.scanMonth = e.target.value; return; }
             else if (t === 'ca-import-file') { importFile(e.target.files[0]); return; }
+            else if (t === 'ca-src-file') { onFiles(e.target.files); return; }
             else return;
             saveUi(); render();
         };
-        el.oninput = e => { if (e.target.id === 'ca-q') { ui.q = e.target.value; render(); } };
+        el.oninput = e => { if (e.target.id === 'ca-q') { ui.q = e.target.value; render(); } else if (e.target.id === 'ca-paste') sst.paste = e.target.value; else if (e.target.id === 'ca-paste-name') sst.pasteName = e.target.value; };
         el.onclick = onClick;
     }
     async function onClick(e) {
         const b = e.target.closest('[data-ca]'); if (!b) return;
         const a = b.dataset.ca, id = b.dataset.id;
-        if (a === 'open') { ui.sel = id; ui.overlay = true; render(); const it = issues.find(x => x.id === id); if (it && !it.brief && !ui.building[id] && !ui.err[id]) buildBrief(id); }
+        if (a === 'open') { ui.sel = id; ui.overlay = true; render(); }
         else if (a === 'close') { ui.overlay = false; render(); }
+        else if (a === 'mode') { ui.mode = b.dataset.m; render(); }
+        else if (a === 'addfiles') { const f = document.getElementById('ca-src-file'); if (f) f.click(); }
+        else if (a === 'addpaste') addPasted();
+        else if (a === 'makenotes') makeNotes(id);
+        else if (a === 'srcstop') { sst.stop = true; render(); }
+        else if (a === 'organise') organise(b.dataset.g, b.dataset.s, b.dataset.t);
+        else if (a === 'dlnotes') downloadSourceNotes();
+        else if (a === 'delnote') { try { await delOne('notes', id); notes = notes.filter(n => n.id !== id); } catch (err) { pop({ title: 'Could not delete', type: 'error', html: `<div>${esc(err.message)}</div>` }); } render(); }
+        else if (a === 'delsrc') {
+            const sr = srcs.find(x => x.id === id); if (!sr) return;
+            pop({ title: 'Delete this source?', type: 'warn', html: `<div>${esc(sr.name)} and the ${sr.notes || 0} notes made from it will be deleted.</div><div class="flex gap-2"><button type="button" id="ca-yes" class="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs font-bold">Delete</button><button type="button" id="ca-no" class="px-3 py-1.5 bg-slate-600 text-white rounded-lg text-xs font-bold">Cancel</button></div>`,
+                onOpen: (box, close) => { box.querySelector('#ca-no').onclick = close; box.querySelector('#ca-yes').onclick = async () => { try { for (const n of notes.filter(x => x.srcId === id)) await delOne('notes', n.id); await delOne('srcs', id); notes = notes.filter(x => x.srcId !== id); srcs = srcs.filter(x => x.id !== id); } catch (err) { pop({ title: 'Could not delete', type: 'error', html: `<div>${esc(err.message)}</div>` }); } close(); render(); }; } });
+        }
         else if (a === 'month') { ui.month = b.dataset.m; saveUi(); render(); }
         else if (a === 'order') { ui.newest = !ui.newest; saveUi(); render(); }
         else if (a === 'scan') runScan();
@@ -6998,7 +7040,7 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
         try {
             const d = JSON.parse(await file.text()), arr = Array.isArray(d) ? d : d.issues;
             if (!Array.isArray(arr)) throw new Error('This file is not a Current Affairs backup.');
-            const ok = arr.filter(i => i && i.id && i.gs && i.subject && i.title && i.month); if (!ok.length) throw new Error('No valid issues found in the file.');
+            const ok = arr.filter(i => i && i.id && i.gs && i.subject && i.title && i.month); ok.forEach(i => { if (i.sources) i.sources = cleanSources(i.sources); }); if (!ok.length) throw new Error('No valid issues found in the file.');
             await putMany('issues', ok); ok.forEach(r => { const k = issues.findIndex(x => x.id === r.id); if (k >= 0) issues[k] = r; else issues.push(r); });
             if (Array.isArray(d.meta)) { await putMany('meta', d.meta); d.meta.forEach(m => { meta[m.key] = m; }); }
             pop({ title: 'Imported', type: 'ok', html: `<div>${ok.length} issues imported. Total: <b>${issues.length}</b>.</div>` });
@@ -7009,9 +7051,182 @@ ${tk.map(t => `  "${t.k}": ["${t.t}: ${t.h}"]`).join(',\n')}
         const it = issues.find(x => x.id === id); if (!it || !it.brief) return; const b = it.brief, tk = toolkitFor(it.subject), L = (t, l) => l && l.length ? `\n${t}\n${l.map(x => '- ' + x).join('\n')}\n` : '';
         let t = `# ${it.title}\n${it.gs} > ${it.subject} > ${it.topic} | ${it.date}\n\n${it.summary}\n` + L('## What happened', b.facts) + (b.background ? `\n## Background\n${b.background}\n` : '');
         tk.forEach(x => { t += L('## ' + x.t, b.sections[x.k]); });
-        t += L('## In favour', b.supporters) + L('## Concerns', b.critics) + L('## Way forward', b.wayForward.map(w => w.point + (w.basis ? ' [' + w.basis + ']' : ''))) + L('## Value addition', b.valueAddition) + (b.answerHook ? `\n## How to use it\n${b.answerHook}\n` : '') + L('## Likely questions', b.likelyQuestions) + L('## Sources', (it.sources || []).map(s => domainOf(s) + ' ' + s.uri));
+        t += L('## In favour', b.supporters) + L('## Concerns', b.critics) + L('## Way forward', b.wayForward.map(w => w.point + (w.basis ? ' [' + w.basis + ']' : ''))) + L('## Value addition', b.valueAddition) + (b.answerHook ? `\n## How to use it\n${b.answerHook}\n` : '') + L('## Likely questions', b.likelyQuestions) + L('## Sources', (it.sources || []).map(s => domainOf(s) + ' ' + safeUrl(s.uri)));
         const done = () => pop({ title: 'Copied', type: 'ok', html: '<div>The notes are copied. Paste them into Smart Notes or any document.</div>' });
         try { navigator.clipboard.writeText(t).then(done, () => pop({ title: 'Could not copy', type: 'warn', html: '<div>Your browser blocked copying.</div>' })); } catch (e) { pop({ title: 'Could not copy', type: 'warn', html: '<div>Your browser blocked copying.</div>' }); }
+    }
+    // ---------- MY SOURCES: upload PDFs / text -> topic-wise notes built around PYQ themes (NotebookLM style) ----------
+    const CHUNK_CHARS = 9000;
+    const nbKey = (gs, sub, tp) => 'nb:' + gs + '|' + sub + '|' + tp;
+    const sst = { busy: false, stop: false, msg: '', paste: '', pasteName: '', orgBusy: '' };
+    const mArr = prompt => { const f = window.mainsApi && window.mainsApi.callBatch; if (!f) return Promise.reject(new Error('The AI engine is not ready. Reload the page.')); return f([{ text: prompt }], 'Source notes', false); };
+    async function readPdf(file) {
+        if (!window.pdfjsLib) throw new Error('The PDF reader did not load. Check your internet and reload the page.');
+        const doc = await pdfjsLib.getDocument({ data: await file.arrayBuffer() }).promise, pages = []; let scanned = 0;
+        for (let n = 1; n <= doc.numPages; n++) {
+            sst.msg = `Reading ${file.name}: page ${n} of ${doc.numPages}...`; if (n % 5 === 0) render();
+            const c = await (await doc.getPage(n)).getTextContent(); let y = null, line = '', out = '';
+            for (const it of c.items) { const yy = Math.round(it.transform[5]); if (y !== null && Math.abs(yy - y) > 3) { out += line + '\n'; line = ''; } y = yy; line += it.str + (it.hasEOL ? '\n' : ''); }
+            out += line;
+            const eng = out.split('\n').filter(l => !(/[ऀ-ॿ]/.test(l) && (l.match(/[A-Za-z]/g) || []).length < 12)).map(l => l.replace(/[ऀ-ॿ‌‍]+/g, ' ').replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+            if (eng.replace(/\s+/g, '').length < 40) { scanned++; pages.push(''); } else pages.push(eng);
+        }
+        return { pages, scanned };
+    }
+    function makeChunks(pages) {
+        const out = []; let buf = '', a = 0;
+        pages.forEach((t, i) => { if (!t) return; if (!buf) a = i + 1; buf += `\n[page ${i + 1}]\n` + t; if (buf.length >= CHUNK_CHARS) { out.push({ a, b: i + 1, text: buf }); buf = ''; } });
+        if (buf.trim().length > 200) out.push({ a, b: pages.length, text: buf });
+        return out;
+    }
+    async function addSource(name, kind, pages, scanned) {
+        const chunks = makeChunks(pages);
+        if (!chunks.length) throw new Error('No readable text was found. If this is a scanned PDF (pictures of pages), it cannot be read here - paste the text instead.');
+        const rec = { id: 'src_' + hash(name + '|' + Date.now()), name, kind, pages: pages.length, scanned: scanned || 0, chunks, done: [], notes: 0, ts: Date.now() };
+        await putMany('srcs', [rec]); srcs.push(rec); return rec;
+    }
+    async function onFiles(files) {
+        if (!files || !files.length || sst.busy) return;
+        sst.busy = true; sst.stop = false; render();
+        let added = 0, problems = [];
+        for (const f of Array.from(files)) {
+            try {
+                let pages, scanned = 0;
+                if (/\.pdf$/i.test(f.name) || f.type === 'application/pdf') { const r = await readPdf(f); pages = r.pages; scanned = r.scanned; }
+                else { const t = await f.text(); pages = t.match(/[\s\S]{1,3500}/g) || []; }
+                await addSource(f.name, /\.pdf$/i.test(f.name) ? 'pdf' : 'text', pages, scanned); added++;
+                if (scanned) problems.push(`${f.name}: ${scanned} page(s) had no text layer (scanned pictures) and were skipped.`);
+            } catch (e) { problems.push(`${f.name}: ${e.message}`); }
+        }
+        sst.busy = false; sst.msg = added ? `${added} source(s) added. Press "Make notes" on each.` : '';
+        if (problems.length) pop({ title: added ? 'Added, with a note' : 'Could not add', type: added ? 'warn' : 'error', html: `<div class="space-y-1 text-sm">${problems.map(x => `<div>${esc(x)}</div>`).join('')}</div>` });
+        render();
+    }
+    async function addPasted() {
+        const t = sst.paste.trim(); if (t.length < 300) { pop({ title: 'Paste more text', type: 'warn', html: '<div>Paste at least a few paragraphs of the article or magazine text.</div>' }); return; }
+        try { await addSource((sst.pasteName.trim() || 'Pasted text ' + new Date().toLocaleDateString('en-IN')), 'text', t.match(/[\s\S]{1,3500}/g) || [], 0); sst.paste = ''; sst.pasteName = ''; sst.msg = 'Source added. Press "Make notes".'; }
+        catch (e) { pop({ title: 'Could not add', type: 'error', html: `<div>${esc(e.message)}</div>` }); }
+        render();
+    }
+    function catalog() { const tx = taxonomy(); return GS_LIST.map(g => (tx[g] || []).map(s => `${g} > ${s.name}: ${s.topics.join(' | ')}`).join('\n')).join('\n'); }
+    function notePrompt(src, ch) {
+        return `You are a UPSC mentor making notes from the aspirant's OWN source "${src.name}" (pages ${ch.a}-${ch.b}).
+Use ONLY the text below. Do not add any fact, number, name or date that is not in the text. Keep numbers, years and names exactly as written.
+Pick only what is useful for UPSC Prelims or Mains (policy, governance, economy, environment, science & tech, international relations, society, ethics, culture, security). Skip advertisements, sports, crime reports, celebrity and pure party politics. If nothing in this text is useful, return [].
+One note per distinct issue or concept (at most 8 notes). Put each note under the best place in this syllabus (use the EXACT GS, subject and topic names; if no topic fits write "${OTHER}"):
+${catalog()}
+
+For each note give:
+- "gs", "subject", "topic": as above
+- "title": short title (max 12 words)
+- "facts": 3 to 7 short bullets of the facts, data, names, dates, provisions and arguments from the text (each max 30 words)
+- "staticLink": one line: which static syllabus concept UPSC would connect this issue to
+- "valueAddition": up to 3 items (data, terms, examples, quotes) from the text that can lift an answer
+- "prelimsFacts": up to 4 crisp facts an MCQ could test; empty list if none
+- "likelyQuestion": one Mains-style question UPSC could frame on this, linking the issue to the static part
+
+TEXT:
+${ch.text}
+
+Return ONLY a JSON array: [{"gs":"","subject":"","topic":"","title":"","facts":[],"staticLink":"","valueAddition":[],"prelimsFacts":[],"likelyQuestion":""}]`;
+    }
+    const arrStr = (x, n) => (Array.isArray(x) ? x : []).map(v => String(v || '').trim()).filter(Boolean).slice(0, n);
+    async function makeNotes(srcId) {
+        const src = srcs.find(x => x.id === srcId); if (!src || sst.busy) return;
+        sst.busy = true; sst.stop = false; const tx = taxonomy(); let got = 0, failed = 0, doneNow = 0;
+        const todo = src.chunks.map((c, i) => i).filter(i => !src.done.includes(i)), total = src.chunks.length;
+        const queue = todo.slice();
+        const upd = () => { sst.msg = `${src.name}: ${src.done.length} of ${total} parts read - ${got} notes made${failed ? ', ' + failed + ' part(s) failed' : ''}${sst.stop ? ' - stopping...' : ''}`; render(); };
+        upd();
+        const worker = async () => {
+            while (queue.length && !sst.stop) {
+                const i = queue.shift(), ch = src.chunks[i];
+                try {
+                    const arr = await mArr(notePrompt(src, ch)), recs = [];
+                    arr.forEach((x, k) => {
+                        const title = String((x && x.title) || '').trim(); if (title.length < 4) return;
+                        const facts = arrStr(x.facts, 8); if (!facts.length) return;
+                        let gs = GS_LIST.find(g => g === String(x.gs || '').toUpperCase().replace(/\s/g, '')) || '', sub = '', topic = OTHER;
+                        const order = gs ? [gs].concat(GS_LIST.filter(g => g !== gs)) : GS_LIST;
+                        for (const g of order) { const s2 = (tx[g] || []).find(s => norm(s.name) === norm(x.subject)) || (tx[g] || []).find(s => norm(s.name).includes(norm(x.subject)) && norm(x.subject).length > 3); if (s2) { gs = g; sub = s2.name; topic = matchTopic(s2.topics, x.topic) || OTHER; break; } }
+                        if (!sub) { gs = gs || 'GS2'; sub = String(x.subject || 'Other').trim() || 'Other'; }
+                        recs.push({ id: 'nt_' + hash(src.id + '|' + i + '|' + norm(title)), srcId: src.id, srcName: src.name, pages: ch.a === ch.b ? 'p. ' + ch.a : 'pp. ' + ch.a + '-' + ch.b, gs, subject: sub, topic, title, facts, staticLink: String(x.staticLink || '').trim(), valueAddition: arrStr(x.valueAddition, 4), prelimsFacts: arrStr(x.prelimsFacts, 5), likelyQuestion: String(x.likelyQuestion || '').trim(), ts: Date.now() });
+                    });
+                    if (recs.length) { await putMany('notes', recs); recs.forEach(r => { const k = notes.findIndex(n => n.id === r.id); if (k >= 0) notes[k] = r; else notes.push(r); }); }
+                    got += recs.length; src.done.push(i); src.notes = notes.filter(n => n.srcId === src.id).length; await putMany('srcs', [src]); doneNow++;
+                } catch (e) { failed++; console.warn('[notes]', e.message); sst.lastErr = String(e.message || e).slice(0, 160); }
+                upd();
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(3, todo.length || 1) }, worker));
+        sst.busy = false; const stopped = sst.stop; sst.stop = false;
+        sst.msg = `${stopped ? 'Stopped' : 'Done'}: ${src.name} - ${src.done.length} of ${total} parts read, ${notes.filter(n => n.srcId === src.id).length} notes.${failed ? ' ' + failed + ' part(s) failed (' + (sst.lastErr || '') + '). Press "Make notes" again to retry them.' : ''}`;
+        render();
+    }
+    // stage 2: arrange the notes of one topic by the dimensions UPSC has asked (PYQ themes) + new angles
+    function pyqContext(gs, sub, topic) {
+        let dims = []; try { const D = (JSON.parse(localStorage.getItem('mains_dims_v1')) || {})[gs + '|' + sub + '|' + topic]; if (D && D.items) dims = D.items.map(i => i.dimension + (i.ids.length > 1 ? ' (asked ' + i.ids.length + ' times)' : '')); } catch (e) {}
+        const M = window.mainsApi ? window.mainsApi.all() : [];
+        const stems = M.filter(q => q.paper === gs && q.tag && q.tag.subject === sub && norm(q.tag.topic) === norm(topic)).sort((a, b) => b.year - a.year).slice(0, 10).map(q => `${q.year}: ${String(q.question).replace(/\s+/g, ' ').slice(0, 220)}`);
+        return { dims, stems };
+    }
+    async function organise(gs, sub, topic) {
+        const list = notes.filter(n => n.gs === gs && n.subject === sub && n.topic === topic); if (!list.length || sst.orgBusy) return;
+        const k = nbKey(gs, sub, topic); sst.orgBusy = k; render();
+        const ctx = pyqContext(gs, sub, topic), body = list.slice(0, 40);
+        const prompt = `You are a UPSC Mains mentor. ${gs} > ${sub} > ${topic}.
+Below are NOTES the aspirant made from their own sources (numbered). Arrange them into answer-ready notes by the DIMENSIONS UPSC asks about this topic.
+${ctx.dims.length ? 'Dimensions UPSC has already asked in past Mains papers: ' + ctx.dims.join(' | ') : 'No past-question dimensions are saved for this topic yet; make sensible dimensions in the style of UPSC.'}
+${ctx.stems.length ? 'Recent past questions on this topic (to see how UPSC frames and links to static): \n' + ctx.stems.join('\n') : ''}
+Rules:
+- Use ONLY facts from the notes. Do not add outside facts. Cite the note numbers each point comes from.
+- For every past dimension that the notes can feed, give one entry with the useful points. Skip dimensions the notes cannot support.
+- Add up to 3 entries marked "isNew": true for NEW angles the notes support that the past dimensions do not cover, and say how UPSC could frame it by linking it to the static part, in the style of the past questions.
+- "staticLink": the static concept to connect to. "answerUse": one line on how to use these points in an answer.
+NOTES:
+${body.map((n, i) => `[${i + 1}] ${n.title} (${n.srcName} ${n.pages}): ${n.facts.join(' ')} ${n.valueAddition.length ? 'Value addition: ' + n.valueAddition.join('; ') : ''}`).join('\n')}
+Return ONLY a JSON array: [{"dimension":"","isNew":false,"points":[{"text":"","n":[1]}],"staticLink":"","answerUse":""}]`;
+        try {
+            const arr = await mArr(prompt);
+            const items = arr.filter(a => a && a.dimension && Array.isArray(a.points)).slice(0, 14).map(a => ({ dimension: String(a.dimension).trim(), isNew: a.isNew === true, points: a.points.map(p => ({ text: String((p && (p.text || p.point)) || (typeof p === 'string' ? p : '')).trim(), n: (Array.isArray(p && p.n) ? p.n : []).map(Number).filter(v => v >= 1 && v <= body.length) })).filter(p => p.text).slice(0, 8), staticLink: String(a.staticLink || '').trim(), answerUse: String(a.answerUse || '').trim() })).filter(a => a.points.length);
+            if (!items.length) throw new Error('The AI returned nothing usable. Try again.');
+            const rec = { key: k, items, srcNotes: body.map(n => ({ t: n.title, s: n.srcName, p: n.pages })), n: list.length, ts: Date.now() }; await putMany('meta', [rec]); meta[k] = rec;
+        } catch (e) { pop({ title: 'Could not arrange the notes', type: 'error', html: `<div>${esc(String(e.message || e).slice(0, 300))}</div>` }); }
+        sst.orgBusy = ''; render();
+    }
+    const bl = (l, cls) => l && l.length ? `<ul class="list-disc pl-5 space-y-0.5 text-sm ${cls || 'text-gray-200'}">${l.map(x => `<li>${esc(x)}</li>`).join('')}</ul>` : '';
+    function sourcesView() {
+        const fl = notes.filter(n => n.gs === ui.gs && (ui.subject === 'ALL' || n.subject === ui.subject) && (ui.topic === 'ALL' || n.topic === ui.topic) && (!ui.q || norm(n.title + ' ' + n.facts.join(' ')).includes(norm(ui.q))));
+        let h = `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-3 text-xs text-gray-300">
+            <div class="text-sm font-bold text-emerald-300"><i class="fa-solid fa-book-open-reader"></i> My Sources - your own magazines, PIB, newspapers</div>
+            <div class="text-gray-400">Add PDFs (or paste text). The AI reads only what is inside them and makes topic-wise notes: facts, the static link, value addition, Prelims facts and a likely question. Then it can arrange the notes by the dimensions UPSC has asked in past Mains papers and suggest new angles. Nothing outside your sources is added.</div>
+            <div class="flex flex-wrap items-center gap-3"><button type="button" data-ca="addfiles" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-bold" ${sst.busy ? 'disabled style="opacity:.5"' : ''}><i class="fa-solid fa-file-arrow-up"></i> Add PDF / text files</button><input type="file" id="ca-src-file" accept=".pdf,.txt,.md,application/pdf,text/plain" multiple class="hidden"><span class="text-violet-300">${esc(sst.msg)}</span>${sst.busy && srcs.length ? '<button type="button" data-ca="srcstop" class="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold">Stop</button>' : ''}</div>
+            <details><summary class="cursor-pointer text-sky-300">Or paste text</summary><div class="space-y-2 mt-2"><input id="ca-paste-name" value="${esc(sst.pasteName)}" placeholder="Name (e.g. The Hindu editorial 12 Nov)" class="${sel} w-72"><textarea id="ca-paste" rows="5" placeholder="Paste article / magazine text here..." class="w-full bg-black/40 border border-gray-600 rounded-lg p-2 text-xs text-gray-200">${esc(sst.paste)}</textarea><button type="button" data-ca="addpaste" class="px-3 py-1.5 bg-emerald-600 text-white rounded-lg font-bold">Add pasted text as a source</button></div></details>`;
+        if (srcs.length) h += `<div class="space-y-1.5 pt-1">${srcs.slice().sort((a, b) => b.ts - a.ts).map(s => { const left = s.chunks.length - s.done.length; return `<div class="flex flex-wrap items-center gap-2 bg-black/20 rounded-lg px-3 py-2"><i class="fa-regular ${s.kind === 'pdf' ? 'fa-file-pdf' : 'fa-file-lines'} text-gray-400"></i><span class="text-gray-100 font-semibold">${esc(s.name)}</span><span class="text-gray-500">${s.pages} pages${s.scanned ? ' (' + s.scanned + ' scanned, skipped)' : ''} &middot; ${s.notes || 0} notes &middot; ${left ? left + ' of ' + s.chunks.length + ' parts left' : 'all parts read'}</span><span class="ml-auto flex gap-3"><button type="button" data-ca="makenotes" data-id="${esc(s.id)}" class="text-emerald-300 hover:underline" ${sst.busy ? 'disabled style="opacity:.5"' : ''}>${left === s.chunks.length ? 'Make notes' : left ? 'Continue' : 'Make again'}</button><button type="button" data-ca="delsrc" data-id="${esc(s.id)}" class="text-red-300 hover:underline">Delete</button></span></div>`; }).join('')}</div>`;
+        h += '</div>';
+        h += `<div class="flex flex-wrap items-center gap-3 text-xs text-gray-400"><span><b class="text-gray-200">${fl.length}</b> notes in ${esc(ui.gs)}${ui.subject !== 'ALL' ? ' &gt; ' + esc(ui.subject) : ''}${ui.topic !== 'ALL' ? ' &gt; ' + esc(ui.topic) : ''} (use the filters above)</span><button type="button" data-ca="dlnotes" class="text-sky-300 hover:underline"><i class="fa-solid fa-download"></i> Download these notes (.md)</button></div>`;
+        if (!fl.length) return h + '<div class="bg-card p-6 rounded-xl border border-gray-700/60 text-xs text-gray-400 text-center">No notes here yet. Add a source and press <b>Make notes</b>, or change the filters.</div>';
+        const groups = {}; fl.forEach(n => { const k = n.subject + '||' + n.topic; (groups[k] = groups[k] || []).push(n); });
+        Object.keys(groups).sort().forEach(k => {
+            const [sub, tp] = k.split('||'), list = groups[k], nb = meta[nbKey(ui.gs, sub, tp)], busy = sst.orgBusy === nbKey(ui.gs, sub, tp);
+            h += `<div class="bg-card p-4 rounded-xl border border-gray-700/60 space-y-3"><div class="flex flex-wrap items-center gap-3"><div class="text-sm font-bold text-sky-300">${esc(sub)} <span class="text-gray-500">&gt;</span> ${esc(tp)}</div><span class="text-[11px] text-gray-500">${list.length} note${list.length > 1 ? 's' : ''}</span><button type="button" data-ca="organise" data-g="${esc(ui.gs)}" data-s="${esc(sub)}" data-t="${esc(tp)}" class="ml-auto px-3 py-1.5 bg-violet-700 hover:bg-violet-600 text-white rounded-lg text-xs font-bold" ${sst.orgBusy ? 'disabled style="opacity:.5"' : ''}><i class="fa-solid fa-layer-group"></i> ${nb ? 'Rearrange' : 'Arrange'} by PYQ dimensions (AI)</button>${busy ? '<span class="text-violet-300 text-xs">Working...</span>' : ''}</div>`;
+            if (nb) h += `<div class="rounded-lg border border-violet-500/40 bg-violet-900/10 p-3 space-y-2"><div class="text-xs font-bold uppercase tracking-wide text-violet-300 font-sans">Dimension-wise notes (from your sources)${nb.n !== list.length ? ' <span class="text-amber-300 normal-case">- notes changed since, rearrange</span>' : ''}</div>${nb.items.map(it => `<div class="space-y-1"><div class="flex flex-wrap items-center gap-2"><b class="text-gray-100 text-sm">${esc(it.dimension)}</b>${it.isNew ? '<span class="px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 text-[10px]">New angle - not asked yet</span>' : ''}</div><ul class="list-disc pl-5 space-y-0.5 text-sm text-gray-200">${it.points.map(p => `<li>${esc(p.text)}${p.n.length ? ` <span class="text-[10px] text-gray-500">[${p.n.map(n => (nb.srcNotes[n - 1] || {}).s ? esc((nb.srcNotes[n - 1].s).slice(0, 24)) + ' ' + esc(nb.srcNotes[n - 1].p) : n).join('; ')}]</span>` : ''}</li>`).join('')}</ul>${it.staticLink ? `<div class="text-xs text-sky-300">Static link: ${esc(it.staticLink)}</div>` : ''}${it.answerUse ? `<div class="text-xs text-violet-200">Use: ${esc(it.answerUse)}</div>` : ''}</div>`).join('')}</div>`;
+            h += list.map(n => `<div class="border border-gray-700/60 rounded-lg p-3 space-y-1.5"><div class="flex flex-wrap items-start gap-2"><b class="text-gray-100 text-sm flex-1">${esc(n.title)}</b><span class="text-[10px] px-1.5 py-0.5 rounded border border-gray-600 text-gray-400">${esc(n.srcName.slice(0, 30))} ${esc(n.pages)}</span><button type="button" data-ca="delnote" data-id="${esc(n.id)}" class="text-[11px] text-red-300 hover:underline">Delete</button></div>${bl(n.facts)}${n.staticLink ? `<div class="text-xs text-sky-300">Static link: ${esc(n.staticLink)}</div>` : ''}${n.valueAddition.length ? `<div class="text-xs text-emerald-300">Value addition:</div>${bl(n.valueAddition, 'text-emerald-100')}` : ''}${n.prelimsFacts.length ? `<div class="text-xs text-amber-300">For Prelims:</div>${bl(n.prelimsFacts, 'text-amber-100')}` : ''}${n.likelyQuestion ? `<div class="text-xs text-violet-200">Likely question: ${esc(n.likelyQuestion)}</div>` : ''}</div>`).join('') + '</div>';
+        });
+        return h;
+    }
+    function downloadSourceNotes() {
+        const fl = notes.filter(n => n.gs === ui.gs && (ui.subject === 'ALL' || n.subject === ui.subject) && (ui.topic === 'ALL' || n.topic === ui.topic));
+        if (!fl.length) return;
+        let t = `# My notes - ${GS_NAME[ui.gs]}\n`; const groups = {};
+        fl.forEach(n => { const k = n.subject + '||' + n.topic; (groups[k] = groups[k] || []).push(n); });
+        Object.keys(groups).sort().forEach(k => {
+            const [sub, tp] = k.split('||'); t += `\n# ${sub} > ${tp}\n`;
+            const nb = meta[nbKey(ui.gs, sub, tp)];
+            if (nb) { t += '\n## By PYQ dimension\n'; nb.items.forEach(it => { t += `\n### ${it.dimension}${it.isNew ? ' (NEW angle)' : ''}\n` + it.points.map(p => '- ' + p.text).join('\n') + '\n' + (it.staticLink ? `Static link: ${it.staticLink}\n` : '') + (it.answerUse ? `Use: ${it.answerUse}\n` : ''); }); t += '\n## Source notes\n'; }
+            groups[k].forEach(n => { t += `\n### ${n.title} (${n.srcName}, ${n.pages})\n` + n.facts.map(f => '- ' + f).join('\n') + '\n' + (n.staticLink ? `Static link: ${n.staticLink}\n` : '') + (n.valueAddition.length ? 'Value addition: ' + n.valueAddition.join('; ') + '\n' : '') + (n.prelimsFacts.length ? 'Prelims: ' + n.prelimsFacts.join('; ') + '\n' : '') + (n.likelyQuestion ? `Likely question: ${n.likelyQuestion}\n` : ''); });
+        });
+        const blob = new Blob([t], { type: 'text/markdown' }), l = document.createElement('a'); l.href = URL.createObjectURL(blob); l.download = `My_Source_Notes_${ui.gs}_${new Date().toISOString().slice(0, 10)}.md`; document.body.appendChild(l); l.click(); l.remove();
     }
     window.caRender = render;
     load();
